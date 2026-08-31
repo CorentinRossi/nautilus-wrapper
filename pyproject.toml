@@ -5,6 +5,7 @@ description = "A GUI wrapper for the Nautilus astrochemistry code"
 requires-python = ">=3.11"
 dependencies = [
     "PyQt6>=6.5",
+    "matplotlib>=3.7",
 ]
 
 [project.scripts]
@@ -12,4 +13,7 @@ nautilus-wrapper = "nautilus_wrapper.main:main"
 
 [build-system]
 requires = ["setuptools>=68.0"]
-build-backend = "setuptools.backends._legacy:_Backend"
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+packages = ["nautilus_wrapper"]

@@ -66,6 +66,23 @@ def serialize_element(rows: list[dict]) -> str:
 # ---------------------------------------------------------------------------
 # abundances.in
 # ---------------------------------------------------------------------------
+def _format_abundance(value: str) -> str:
+    """Normalise an abundance to 3-decimal scientific notation, e.g. ``9.000E-02``.
+
+    Accepts ``D``/``E``/plain-decimal input. Nautilus reads this column with
+    ``(e12.6)``, and ``E`` is its native exponent letter. Text that is not a
+    number is left as typed.
+    """
+    text = value.strip()
+    if not text:
+        return text
+    try:
+        number = float(text.replace("D", "e").replace("d", "e"))
+    except ValueError:
+        return text
+    return f"{number:.3e}".replace("e", "E")
+
+
 def parse_abundances(text: str) -> tuple[list[dict], list[str]]:
     headers = ["Species", "Abundance", "Comment"]
     rows = []
@@ -81,14 +98,18 @@ def parse_abundances(text: str) -> tuple[list[dict], list[str]]:
         if "=" not in stripped:
             continue
         key, _, value = stripped.partition("=")
-        rows.append({"Species": key.strip(), "Abundance": value.strip(), "Comment": comment})
+        rows.append({
+            "Species": key.strip(),
+            "Abundance": _format_abundance(value.strip()),
+            "Comment": comment,
+        })
     return rows, headers
 
 
 def serialize_abundances(rows: list[dict]) -> str:
     lines = ["! Abundances in relative abundances with respect to Hydrogen"]
     for r in rows:
-        part = f"{r['Species']:12s}= {r['Abundance']}"
+        part = f"{r['Species']:12s}= {_format_abundance(r['Abundance'])}"
         if r.get("Comment"):
             part += f" ! {r['Comment']}"
         lines.append(part)
@@ -101,32 +122,49 @@ def serialize_abundances(rows: list[dict]) -> str:
 ELEMENT_COLS = ["charge", "H", "He", "C", "N", "O", "Si", "S", "Fe", "Na", "Mg", "Cl", "P", "F"]
 
 
+SPECIES_HEADERS = ["Species"] + ELEMENT_COLS + ["_comment"]
+
+
 def parse_species(text: str) -> tuple[list[dict], list[str]]:
-    headers = ["Species"] + ELEMENT_COLS
     rows = []
     for line in text.splitlines():
         stripped = line.strip()
         if not stripped or stripped.startswith("!"):
             continue
+        comment = ""
+        idx = stripped.find("!")
+        if idx >= 0:
+            comment = stripped[idx + 1:].strip()
+            stripped = stripped[:idx].strip()
         parts = stripped.split()
         if len(parts) < 2:
             continue
         name = parts[0]
         nums = parts[1:]
-        row = {"Species": name}
+        row = {"Species": name, "_comment": comment}
         for i, col in enumerate(ELEMENT_COLS):
             row[col] = nums[i] if i < len(nums) else "0"
         rows.append(row)
-    return rows, headers
+    return rows, SPECIES_HEADERS
 
 
 def serialize_species(rows: list[dict]) -> str:
+    """Serialize species rows to the fixed-width layout Nautilus expects.
+
+    The Fortran reader uses ``(A11, i3, 13(I3))`` (see
+    ``read_species`` in ``src/nautilus_core/input_output.f90``): an 11-char
+    label followed by 14 back-to-back 3-char integer fields with *no*
+    separators. Emitting a space between fields (as the previous version did)
+    shifts every column and makes the file unreadable.
+    """
     lines = []
     for r in rows:
-        parts = [r["Species"]]
-        for col in ELEMENT_COLS:
-            parts.append(r.get(col, "0"))
-        lines.append(" ".join(f"{p:>3s}" if i > 0 else f"{p:<12s}" for i, p in enumerate(parts)))
+        line = f"{r['Species']:<11.11}" + "".join(
+            f"{r.get(col, '0'):>3.3}" for col in ELEMENT_COLS
+        )
+        if r.get("_comment"):
+            line += f"    ! {r['_comment']}"
+        lines.append(line)
     return "\n".join(lines) + "\n"
 
 
@@ -140,71 +178,78 @@ REACTION_COLS = [
     "ITYPE", "Tmin", "Tmax", "Formula", "ID",
 ]
 
+# gas_reactions.in / grain_reactions.in use a strict fixed-width layout. The
+# Fortran reader (``read_reactions`` in ``src/nautilus_core/input_output.f90``)
+# builds the format ``(3A11, 1x, 5A11, 3D11.3, 23x, I3, 2I7, I3, I6)``.
+#
+# The 23-char block between C and ITYPE (branching exponents + a formula
+# keyword like ``logn``/``NA``) and everything past the ID field (KIDA range
+# flags, or a free-text reference on some networks) are *not* consumed by that
+# read but are meaningful and vary line to line. We keep them verbatim in the
+# hidden ``_mid`` / ``_tail`` fields and splice them back on serialization so a
+# load/save round-trip is byte-for-byte identical.
+_REACTION_FIELDS: dict[str, tuple[int, int]] = {
+    "Reactant1": (0, 11), "Reactant2": (11, 22), "Reactant3": (22, 33),
+    "Product1": (34, 45), "Product2": (45, 56), "Product3": (56, 67),
+    "Product4": (67, 78), "Product5": (78, 89),
+    "A": (89, 100), "B": (100, 111), "C": (111, 122),
+    "ITYPE": (145, 148), "Tmin": (148, 155), "Tmax": (155, 162),
+    "Formula": (162, 165), "ID": (165, 171),
+}
+_REACTION_MID = (122, 145)
+_REACTION_TAIL_START = 171
+
+REACTION_HEADERS = REACTION_COLS + ["_mid", "_tail"]
+
+_REACTION_HEADER_LINE = (
+    "!    Reactants                    Products                "
+    "                                  A          B          C      "
+    "xxxxxxxxxxxxxxxxxxxxx ITYPE Tmin   Tmax formula ID xxxxx"
+)
+
 
 def _parse_reaction_line(line: str) -> dict | None:
-    """Parse a single reaction line using fixed-width fields."""
-    stripped = line.strip()
-    if not stripped or stripped.startswith("!"):
+    """Parse a single reaction line using the fixed-width Fortran layout."""
+    idx = line.find("!")
+    if idx >= 0:
+        line = line[:idx]
+    if not line.strip():
         return None
 
-    row = {}
-    # Reactants: positions 0-10, 11-21, 22-32
-    row["Reactant1"] = stripped[0:11].strip()
-    row["Reactant2"] = stripped[11:22].strip()
-    row["Reactant3"] = stripped[22:33].strip()
-    # Products: positions 33-43, 44-54, 55-65, 66-76, 77-87
-    row["Product1"] = stripped[33:44].strip()
-    row["Product2"] = stripped[44:55].strip()
-    row["Product3"] = stripped[55:66].strip()
-    row["Product4"] = stripped[66:77].strip()
-    row["Product5"] = stripped[77:88].strip()
-    # Rate coefficients A, B, C (11 chars each)
-    row["A"] = stripped[88:99].strip()
-    row["B"] = stripped[99:110].strip()
-    row["C"] = stripped[110:121].strip()
-
-    # The rest is variable - try to extract remaining fields
-    rest = stripped[121:].strip()
-    parts = rest.split()
-    # fields: [possibly junk], ITYPE, Tmin, Tmax, Formula, ID, ...
-    # We just store whatever we find after C
-    row["ITYPE"] = parts[0] if len(parts) > 0 else ""
-    row["Tmin"] = parts[1] if len(parts) > 1 else ""
-    row["Tmax"] = parts[2] if len(parts) > 2 else ""
-    row["Formula"] = parts[3] if len(parts) > 3 else ""
-    row["ID"] = parts[4] if len(parts) > 4 else ""
-
+    row = {name: line[a:b].strip() for name, (a, b) in _REACTION_FIELDS.items()}
+    row["_mid"] = line[_REACTION_MID[0]:_REACTION_MID[1]]
+    row["_tail"] = line[_REACTION_TAIL_START:]
     return row
 
 
 def parse_reactions(text: str) -> tuple[list[dict], list[str]]:
-    headers = REACTION_COLS
     rows = []
     for line in text.splitlines():
         row = _parse_reaction_line(line)
         if row is not None:
             rows.append(row)
-    return rows, headers
+    return rows, REACTION_HEADERS
 
 
 def serialize_reactions(rows: list[dict]) -> str:
-    """Serialize reaction rows back to fixed-width text.
-
-    We reconstruct the original layout as closely as possible.
-    """
-    lines = ["!    Reactants                    Products                                                  A          B          C      xxxxxxxxxxxxxxxxxxxxx ITYPE Tmin   Tmax formula ID xxxxx"]
+    """Serialize reaction rows back to the exact fixed-width layout."""
+    lines = [_REACTION_HEADER_LINE]
     for r in rows:
-        # Build the fixed-width line
-        reactants = f"{r['Reactant1']:<11s}{r['Reactant2']:<11s}{r['Reactant3']:<11s}"
-        products = (
-            f"{r['Product1']:<11s}{r['Product2']:<11s}{r['Product3']:<11s}"
-            f"{r['Product4']:<11s}{r['Product5']:<11s}"
+        mid = r.get("_mid", "")
+        mid = mid[:23] if len(mid) >= 23 else mid.ljust(23)
+        tail = r.get("_tail", "") or " 1  1"
+        line = (
+            f"{r.get('Reactant1', ''):<11.11}{r.get('Reactant2', ''):<11.11}"
+            f"{r.get('Reactant3', ''):<11.11} "
+            f"{r.get('Product1', ''):<11.11}{r.get('Product2', ''):<11.11}"
+            f"{r.get('Product3', ''):<11.11}{r.get('Product4', ''):<11.11}"
+            f"{r.get('Product5', ''):<11.11}"
+            f"{r.get('A', ''):>11.11}{r.get('B', ''):>11.11}{r.get('C', ''):>11.11}"
+            f"{mid}"
+            f"{r.get('ITYPE', ''):>3.3}{r.get('Tmin', ''):>7.7}{r.get('Tmax', ''):>7.7}"
+            f"{r.get('Formula', ''):>3.3}{r.get('ID', ''):>6.6}"
+            f"{tail}"
         )
-        abc = f"{r['A']:>11s}{r['B']:>11s}{r['C']:>11s}"
-        tail_parts = [r.get("ITYPE", ""), r.get("Tmin", ""), r.get("Tmax", ""),
-                      r.get("Formula", ""), r.get("ID", "")]
-        tail = " ".join(p for p in tail_parts if p)
-        line = f"{reactants} {products}{abc} {tail}"
         lines.append(line)
     return "\n".join(lines) + "\n"
 

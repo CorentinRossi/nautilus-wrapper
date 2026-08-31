@@ -1,0 +1,11 @@
+pyproject.toml
+nautilus_wrapper/__init__.py
+nautilus_wrapper/__main__.py
+nautilus_wrapper/main.py
+nautilus_wrapper/parsers.py
+nautilus_wrapper.egg-info/PKG-INFO
+nautilus_wrapper.egg-info/SOURCES.txt
+nautilus_wrapper.egg-info/dependency_links.txt
+nautilus_wrapper.egg-info/entry_points.txt
+nautilus_wrapper.egg-info/requires.txt
+nautilus_wrapper.egg-info/top_level.txt

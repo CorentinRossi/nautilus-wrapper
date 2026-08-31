@@ -1,0 +1,2 @@
+[console_scripts]
+nautilus-wrapper = nautilus_wrapper.main:main
