@@ -1,0 +1,41 @@
+! Abundances in relative abundances with respect to Hydrogen
+! on considère une très forte déplétion et un relargage des espèces très volatiles (N2, CO et CH4), puis on ajuste les abondances critiques en minimisant les abondances atomiques.
+! N, C et O peuvent être à zéro, ils sont produits par la DR de N2H+, HCO+, ... mais il faut par contre N2, CO et CH4 (espèces qui désorbent facilement)
+!N   ! ISM(Savage1997)=9.3D-5 Solar(Asplund2009)=6.7D-5 Hincelin2011: 6.2D-05 Jenkin2009: 6.2D-05 = 10^(7.90+(-0.109-0.000*(1-0.550))-12)  
+!O   ! ISM(Savage1997)=7.4D-4 Solar(Asplund2009)=4.9D-4 Hincelin2011: 2.4D-04 Jenkin2009: 3.3D-04 = 10^(8.76+(-0.145-0.225*(1-0.598))-12)  
+!C   ! ISM(Savage1997)=3.5D-4 Solar(Asplund2009)=2.7D-4 Hincelin2011: 1.7D-04 Jenkin2009: 1.7D-04 = 10^(8.46+(-0.193-0.101*(1-0.803))-12) 
+!
+! Pour le soufre il faut sH2S ou sNH4SH et aussi une source de S dans la phase gaz
+!S   ! Solar(Asplund2009)=1.3D-5 Comets: 1.5%*H2O
+! espèces minoritaires non critiques:
+!Si+ ! Solar(Asplund2009)=3.2D-5 SiO<2.4e-12 (Turner_1998 upper limit) 
+!Fe+ ! Solar(Asplund2009)=3.1D-5 
+!Na+ ! Solar(Asplund2009)=1.7D-6 
+!P+  ! Solar(Asplund2009)=2.6D-7 PN<6.2e-12 (Turner_1990 upper limit), Ritchey 2023 avec F=1: 6e-8
+!Cl+ ! Solar(Asplund2009)=3.2D-7 Ritchey 2023 avec F=1: 1e-7
+!F   ! Solar(Asplund2009)=3.6D-8 
+!
+! espèces critiques pour la chimie en phase gazeuse:
+H2          = 0.500000D-00 ! 
+He          = 9.000000D-02 ! 
+N2          = 1.000000D-05 ! critique comme source de N
+CO          = 5.000000D-05 ! critique pour CO et les oxygénés
+CH4         = 5.000000D-06 ! critique pour les carbonnés
+S           = 1.500000D-07 ! critique comme source de composés soufrés dans la phase gazeuse
+! alternatives: CS = 1.500000D-07, SO2 = 2.000000D-07, C2S = 2.000000D-07
+! espèces critiques pour elles mêmes
+KCH3OH      = 2.000000D-05 ! critique pour CH3OH 
+KNH4SH      = 1.000000D-05 ! critique pour sNH4+, H2S et comme réservoir de S
+! espèces non critiques pour la phase gazeuse mais réservoirs et observées dans les glaces:
+KNH3        = 2.000000D-05 !  critique pour sNH3
+KH2O        = 2.000000D-04 !  critique pour sH2O
+KCO2        = 4.000000D-05 !  critique pour sCO2
+KCO         = 1.000000D-04 !  critique pour sCO
+KOCS        = 3.000000D-07 !  critique pour sOCS
+! espèces minoritaires non critiques:
+Si+         = 1.000000D-11 ! upper limit pour SiO
+!Fe+         = 2.000000D-08 ! marche un peu mieux avec Fe+=0
+Na+         = 2.000000D-08 ! 
+P+          = 1.000000D-09 ! upper limit pour PN
+Cl+         = 1.000000D-08 ! 
+F           = 1.000000D-08 ! 

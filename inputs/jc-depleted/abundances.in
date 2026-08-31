@@ -1,0 +1,36 @@
+! Abundances in relative abundances with respect to Hydrogen
+! on s'inspire des abondances du run 212, V40, Ediff=0.2 après la première phase dense.
+! N2, CO et CH4 sont en partie relargués dans la phase gazeuse, le CH4 est détruit par photodissociation mais pas N2 ni CO qui sont protégés par leur absorption (15NN est détruit par contre et 13C0 et C18O aussi).
+!N   ! ISM(Savage1997)=9.3D-5 Solar(Asplund2009)=6.7D-5 Hincelin2011: 6.2D-05 Jenkin2009: 6.2D-05 = 10^(7.90+(-0.109-0.000*(1-0.550))-12)  
+!O   ! ISM(Savage1997)=7.4D-4 Solar(Asplund2009)=4.9D-4 Hincelin2011: 2.4D-04 Jenkin2009: 3.3D-04 = 10^(8.76+(-0.145-0.225*(1-0.598))-12)  
+!C   ! ISM(Savage1997)=3.5D-4 Solar(Asplund2009)=2.7D-4 Hincelin2011: 1.7D-04 Jenkin2009: 1.7D-04 = 10^(8.46+(-0.193-0.101*(1-0.803))-12) 
+!
+! Pour le soufre il faut sH2S ou sNH4SH et aussi une source de S dans la phase gaz
+!S   ! Solar(Asplund2009)=1.3D-5 Comets: 1.5%*H2O
+! espèces critiques pour la chimie en phase gazeuse:
+H2          = 0.500000D-00 ! 
+He          = 9.000000D-02 ! 
+!N           = 1.000000D-05 ! pas utile, il y a assez de N venant de N2
+N2          = 1.000000D-05 ! 
+!O           = 2.000000D-06 ! aussi petit que possible, il y a assez de O venant de CO 
+C+          = 1.000000D-05 ! il faut un apport supplémentaire de C en plus du CO
+CO          = 5.000000D-05 ! 
+S+          = 8.000000D-07 ! 
+! espèces critiques pour elles mêmes
+KCH3OH      = 2.000000D-05 ! critique pour CH3OH 
+KNH4SH      = 1.000000D-05 ! critique pour sNH4+, H2S et comme réservoir de S
+! espèces non critiques pour la phase gazeuse mais réservoirs et pour reproduire les observations:
+KNH3        = 1.000000D-05 !  
+KH2O        = 2.000000D-04 !  
+KCO         = 1.000000D-04 ! 
+KCO2        = 4.000000D-05 !  
+KOCS        = 3.000000D-07 !  
+! espèces minoritaires non critiques:
+Si+         = 1.000000D-11 ! upper limit pour SiO
+Fe+         = 2.000000D-08 ! 
+Na+         = 2.000000D-08 ! 
+P+          = 1.000000D-09 ! upper limit pour PN
+Cl+         = 1.000000D-08 ! 
+F           = 1.000000D-08 ! 
+
+

@@ -1,0 +1,15 @@
+[project]
+name = "nautilus-wrapper"
+version = "0.1.0"
+description = "A GUI wrapper for the Nautilus astrochemistry code"
+requires-python = ">=3.11"
+dependencies = [
+    "PyQt6>=6.5",
+]
+
+[project.scripts]
+nautilus-wrapper = "nautilus_wrapper.main:main"
+
+[build-system]
+requires = ["setuptools>=68.0"]
+build-backend = "setuptools.backends._legacy:_Backend"

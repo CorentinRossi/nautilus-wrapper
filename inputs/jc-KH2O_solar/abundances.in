@@ -1,0 +1,16 @@
+! Abundances in relative abundances with respect to Hydrogen
+! Hincelin2011: Jenkins_2009: 10^([X/H]ref+Bx+Ax*(F-zx)-12) avec F=1 pour TMC1, pour Cl et P voir Ritchey 2023
+! low metal abundance= zeta Oph (F around 1) with S+, Si+ and M+ divided by 100 (Graedel 1982)
+He          = 9.000000D-02 ! 
+N           = 6.700000D-05 ! ISM(Savage1997)=9.3D-5 Solar(Asplund2009)=6.7D-5 Hincelin2011: 6.2D-05 Jenkin2009: 6.2D-05 = 10^(7.90+(-0.109-0.000*(1-0.550))-12)  
+O           = 2.100000D-04 ! ISM(Savage1997)=7.4D-4 Solar(Asplund2009)=4.9D-4 Hincelin2011: 2.4D-04 Jenkin2009: 3.3D-04 = 10^(8.76+(-0.145-0.225*(1-0.598))-12)  
+KH2O        = 2.800000D-04 ! 
+H2          = 0.500000D-00 ! 
+C+          = 2.700000D-04 ! ISM(Savage1997)=3.5D-4 Solar(Asplund2009)=2.7D-4 Hincelin2011: 1.7D-04 Jenkin2009: 1.7D-04 = 10^(8.46+(-0.193-0.101*(1-0.803))-12) 
+S+          = 6.500000D-06 ! ISM(Savage1997)=1.9D-5 Solar(Asplund2009)=1.3D-5 Hincelin2011: 8.0D-08 Jenkin2009: 3.0D-06 = 10^(7.19+(-0.091-0.879*(1-0.290))-12) Comets: 1.5%*H2O=1%O
+Si+         = 2.000000D-11 ! ISM(Savage1997)=3.5D-5 Solar(Asplund2009)=3.2D-5 Hincelin2011: 8.0D-09 Jenkin2009: 1.8D-06 = 10^(7.61+(-0.570-1.136*(1-0.305))-12), Pepe (SiO) <6e-11 , SiO <- 2.4e-12	Turner_1998 upper limit 
+Fe+         = 2.000000D-08 ! ISM(Savage1997)=3.2D-5 Solar(Asplund2009)=3.1D-5 Wakelam2008(EA3),Flower2003: 1.5D-08, Hincelin2011: 3.0D-09, Jenkin2009: 2.0D-07 = 10^(7.54+(-1.513-1.293*(1-0.437))-12)  
+Na+         = 2.000000D-08 !                        Solar(Asplund2009)=1.7D-6 Wakelam2008(EA3): 2.0D-07, Hincelin2011: 2.0D-09 (Savage1996/100) 
+P+          = 1.200000D-9 ! ISM(Savage1997)=3.7D-7 Solar(Asplund2009)=2.6D-7 Hincelin2011: 2.0D-10 Jenkin2009: 7.7D-08 = 10^(5.54+(-0.166-0.945*(1-0.488))-12), PN<6.2e-12 Turner_1990 upper limit, Ritchey 2023 avec F=1: 6e-8
+Cl+         = 1.000000D-07 ! ISM(Savage1997)=1.9D-7 Solar(Asplund2009)=3.2D-7 Wakelam2008(EA3): 1.8D-08 Hincelin2011: 1.0D-09 Jenkin2009: 3.4D-08 = 10^(5.33+(-0.314-1.242*(1-0.609))-12), Ritchey 2023 avec F=1: 1e-7
+F           = 6.700000D-09 !                        Solar(Asplund2009)=3.6D-8 Wakelam2008(EA3),Neufeld2005:  6.7D-09
