@@ -1,0 +1,250 @@
+# H2 <- 1e22   # Suutarinen 2011
+# source("/Users/jcloison/Documents/Astrochimie/Abondances/TMC1.R")
+### Carbon
+CH	 	<- 1.6e-8 # Suutarinen_2011, Ohishi_1992
+#C2H 	<- 8e-9 # Agundez 2013
+C2H 	<- 6.4e-8 # Sakai2010
+#C2H- 	<- 2.2e-11	# upper limit Agundez 2008
+c-C3H 	<- 1.3e13/1e22 # Cernicharo 2026
+#c-C3H	 <- 6.1e-10 # Loison 2016
+#c-C3H  <- 3.0e-9 # Gratier 2016
+#c-C3H	 <- 1.2e-10 # Cernicharo 2021
+#l-C3H 	<- 1.1e13/1e22 # Cernicharo 2026
+#l-C3H 	<- 1.1e-10 # Loison 2016
+#l-C3H <- 5.6e-10 # Gratier 2016
+#C3H+ 	<- 6e-11 # McGuire 2013
+C3H+ 	<- 2.4e10/1e22		# Cernicharo 2022
+c-C3H2 <- 1.2e-8 # Loison 2016
+#c-C3H2 <- 1.9e-9 # Gratier 2016
+#l-C3H2 <- 1.8e-10 # Loison 2016
+#l-C3H2 <- 5.0e-11 # Gratier 2016
+#l-C3H2 <- 1.95e-10 # Silva_2023
+#C3H3 	<- 8.7e-9	# Agundez 2021
+C3H3 	<- 1.0e-8	# Agundez 2022
+#l-C3H3p <- 8.0e-11 # Silva_2023
+CH3CCH <- 10^-7.94  # Gratier 2016
+C3H6  	<- 4e-9  #Agundez 2013
+C4H 	<- 5.4e-9	#Oyama_2020 # 7.1e-8 # Agundez 2013
+#H2C4  	<- 7e-10  #Agundez 2013
+H2C4 	<- 3.3e-10	# Cabezas 2021
+#C2H3C2H <- 1.1e-9	# Cernicharo 2021
+#C5H 	<- 5e-10 # Agundez 2013, Gratier 2016, Turner 2000
+#C5H 	<- 1.3e12/1e22	# Cabezas 2022
+#c-C5H 	<- 9.0e10/1e22	# Cabezas 2022
+#C5H+ 	<- 8.8e10/1e22		# Cernicharo 2022
+#c-C5H2 <- 3.1e-11			# Cernicharo 2021
+#l-C5H2 <- 1.8e10/1e22		# Cabezas 2021
+#CH3C4H <- 1.0e-9  # Agundez 2013
+#CH3C4H <- 1.4e-9	# Cernicharo 2021
+#H2C3HC2H <- 1.2e-9	# Cernicharo 2021
+#C6H 	<- 4.1e-10 # Agundez 2013
+#H2C6  	<- 4.7e-11  #Langer 1997
+#H2C6 	<- 8.0e-12	# Cabezas 2021
+#H2C6 	<- 1.0e-11	# moyenne
+#C4HC2H 		<- 1.3e-11 	# Fuentetaja_2022
+#C5H5N <- 5.9e11/1e22	# McCarthy 2020 upper limit (Pyridine)
+#c-C5H6	<- 1.2e13/1e22	# Cernicharo 2021
+#C6H4 	<- 5.0e-11	# Cernicharo 2021
+#c-C5H5CN	<- 1.44e12/1e22	# McGuire 2018
+#C6H5CN <- 4e-11	# McGuire 2018
+#C6H5CH3 <- 6.0e-10	# upper limit Cernicharo 2022
+#c-C5H4CCH2 <- 2.7e-10 	# Cernicharo 2022
+#c-1C5H5CCH <- 1.4e-10	# Cernicharo 2021
+#c-2C5H5CCH <- 2.0e-10	# Cernicharo 2021
+#C6H5C2H <- 3.0e-10	# Cernicharo 2021
+#C9H8 	<- 1.6e-9		# Cernicharo 2021, indene
+#C9H8_Gotha- 	<- 9.04e12/1e22		# Sita 2022, indene
+#C11H8 <- 6e12/1e22	# Fuentetaja_2026_C11H8
+#C10H7CN <- 1.73e-10	# McGuire 2021
+#C4H- 	<- 8.0e-13  #Cordiner 2013
+#C6H- 	<- 1.0e-11  #Agundez 2013
+#C6H- 	<- 4.8e-12  #Cordiner 2013
+#C7H 	<- 1.5e-11 # upper limit, Bell_1999 
+#C8H- 	<- 2.1e-12  #Agundez 2013
+### Nitrogen
+#NH3  	<- 2.45e-8 #Agundez 2013
+N2H+ 	<- 2.8e-10 #Agundez 2013
+CN 	<- 3e-8 # Ohishi_1992
+HCN 	<-  1.4e-8 # Agundez 2013 
+HNC 	<-  2.0e-8 # Agundez 2013
+HCNHp  <- 1.9e-9 #Agundez 2013
+#H2CN 	<-  1.5e-11 #Agundez 2013
+#CH2NH 	<- 1.3e-10	# upper limit Dickens_1997
+#HCCN 	<- 2e-10	# upper limit McGonagle 1996
+#HCCN 	<- 4.4e-11	# Cernicharo 2021
+#CH2CN 	<-  5e-9 #Irvine 1998 
+#CH2CN 	<-  3.8e-9 #Gratier 2020
+CH2CN 	<-  1.92e-9 #Tennis 2023
+#CH3CN 	<-  3e-10 #Agundez 2013
+CH3CN 	<-  5.0e-10 #Tennis 2023
+#CH3NC 	<-  2.97e-11 #Tennis 2023
+#CH3CN 	<-  4.4e-10 #Loison 2025
+#CH3NC 	<-  1.4e-11 #Loison 2025
+#CH2CNH <-  1.4e-10 #Loison 2025
+#C2N 	<- 1.3e-10	# Cernicharo 2021 upper limit
+C3N 	<- 1.5e-9 #Cernicharo 2026
+#C3N- 	<- 1.3e11/1e22	# Cernicharo 2020
+#C4N 	<- 4e-9	# Cernicharo 2021 upper limit
+#HC3N 	<- 2.0e-8 #Agundez 2013 
+#HNC3 	<- 3.8e-11 #Agundez 2013 (Kawaguchi1992) 
+#HCCNC 	<- 2.9e-10 #Agundez 2013 
+#HC3N+ 	<- 6.0e10/1e22 #Agundez 2013
+HC3NHp <- 1.0e-10 #Agundez 2013
+#H2C3N 	<- 2.5e11/1e22	# Cabezas 2023
+#C2H3CN <- 1.0e-9 #Agundez 2013 
+#C2H3CN <- 10^12.81/1e22 #Gratier 2016
+C2H3CN <- 6.5e-10	# Cernicharo 2021
+#C2H5CN <- 3.0e-10 # upper limit Minh 1990 
+C2H5CN <- 1.1e-11	# Cernicharo 2021
+#HC4N 	<- 3.0e-11	# Cernicharo 2021
+CH3C3N <- 5.0e-10 #Agundez 2013 
+#CH2C3N <- 1.6e-11 #Cabezas 2021 
+#C3H3CN <- 4.5e-11 #Agundez 2013 
+C3H3CN <- 1.7e-10 #Marcelino 2021 
+#CH3CHCHCN <- 4.3e-11 #Cernicharo 2022 
+#CH2CCH3CN <- 4.3e-11 #Cernicharo 2022 
+#CH2CHCH2CN <- 4.3e-11 #Cernicharo 2022 
+#C5N 	<- 3.0e-11 #Guélin 1998 
+#C5N 	<- 2e12/1e22	# Cernicharo 2020
+#C5N- 	<- 2.6e11/1e22	# Cernicharo 2020
+HC5N 	<- 4.0e-9 #Agundez 2013 
+#HNC5 	<- 1.5e-11	# Cernicharo 2020	# upper limit
+#HNC5 	<- 1.3e-12	# Fuentetaja 2024
+#HC4NC 	<- 1.3e-11	# Fuentetaja 2024
+#HC4NC 	<- 3.3e-11	# Xue_2020
+C2H3C3N <- 2e11/1e22	# Lee2021 (GOTHAM)
+HC7N 	<- 1.0e-9 #Agundez 2013 
+CNCN 	<- 9e11/1e22 # Agundez 2018
+C2N2Hp <- 8.6e10/1e22 # Agundez 2018
+C6H5CN <- 1.2e-10	# Cernicharo 2021
+### Oxygen
+OH 	<-  2.6e-7 # Suutarinen_2011, Ohishi_1992
+#H2O 	<-  7.0e-8 # borne max Agundez 2013
+#H2O2 	<- 6e-12	# Cernicharo, private communication 2021 (QUIJOTE Survey)
+O2  	<- 8.0e-8  #Agundez 2013 upper limit
+NO  	<- 2.7e-8  #Agundez 2013
+#CO  	<- 1.7e-4 #Agundez 2013
+#CQ 	<- 3.7e-7		# Jorgensen 2002
+CO 	<- 68*1.54E16/16.71e21	# TMC1-CP, n(H2)=2.26e4 Fuente2019/GEMS
+#CO 	<- 500*2.92E15/16.71e21 # TMC1-CP, n(H2)=2.26e4 Fuente2019/GEMS
+#GO 	<- 1.54E16/16.71e21	# TMC1-CP, n(H2)=2.26e4 Fuente2019/GEMS
+#CQ 	<- 2.92E15/16.71e21 # TMC1-CP, n(H2)=2.26e4 Fuente2019/GEMS
+HCO 	<- 1.1e-10	# Agundez 2015, Cernicharo 2021b?
+#HCOp  <- 9.3e-9 #Agundez 2013
+HCO+ 	<- 68*3.5e12/16.71e21	# TMC1-CP, n(H2)=2.26e4 Fuente019/GEMS
+#H2CO  	<- 5e-8 #Agundez 2013
+#H2COHp <- 3.0e-11			# Cernicharo 2020 upper limit
+#CH3O 	<- 1e-10 # upper limit Agundez 2013
+#CH3OH <- 10^-8.94  # Gratier 2016
+CH3OH 	<- 3.2e13/16.71e21	# TMC1-CP, n(H2)=2.26e4 Fuente019/GEMS
+#C2O  	<- 6e-11 #Ohishi_1991
+C2O  	<- 7.5e-11 # Cernicharo 2021
+#HCCO  	<- 7.7e-11 #Cernicharo 2021b 
+H2CCO  <- 6e-10 #Agundez 2013
+#CH3COp <- 3.2e-11	# Cernicharo 2020
+CH3CHO <- 10^-9.57  # Gratier 2016
+C3O  	<- 1.2E-10 # Cernicharo 2021b 
+#C3O  	<- 8.3E-11 # Gratier 2016
+#C3O  	<- 1.4E-10 # Brown 1985
+#C3O  	<- 1.0E-10 # Agundez 2013
+#HC3O  <- 3E-10 # Chen 1996, Ohishi 1995 upper limit
+#HC3O  <- 3E-11 # McGuire 2018 upper limit
+#HC3O 	<- 1.3e-11			# Cernicharo 2021b
+#HC3O+ 	<- 2.1e-11			# Cernicharo 2020
+#HCCCHO <- 8.0e-11  # Loison 2016
+HCCCHO <- 2.0e-10  # Cernicharo 2020
+#c-H2C3O <- 5.4E-12  # Loison 2016
+#c-H2C3O <- 4.0E-11  # Cernicharo 2020
+#H2C3O 	<- 3.7e-12	# 2025
+#C2H3CHO <- 2.2e11/1e22		# Agundez 2021
+#CH3CHCO <- 1.5e11/1e22		# Fuentataja_2023
+#C2H3OH <- 2.2e12/1e22		# Agundez 2021
+CH3OCH3 <- 2.6e12/1e22		# Agundez 2021
+#C4O  	<- 9E-12 # Cernicharo 2021b upper limit
+H2C4O 	<- 1.4e-11	# Cernicharo 2020 upper limit (Table A.1)
+C5O 	<- 1.5e-12			# Cernicharo 2021b
+#HC5O  	<- 1.7E-10 # McGuire 2018 
+HC5O  	<- 1.4E-10 # Cernicharo 2021b 
+#HOCO+ 	<- 3e-10	# Turner 1999
+HCOOH 	<- 2e-10	# Turner 1999
+HCOOCH3 <- 1.1e12/1e22		# Agundez 2021
+C2H5OH <- 1.1e12/1e22	# Agundez 2023
+CH3COCH3 <- 1.4e11/1e22	# Agundez 2023
+#C2H5CHO <- 1.9e11/1e22	# Agundez 2023
+HNCO 	<- 5.7e-10   #Marcelino 2009
+#H2NCOp <- 4.0e-12			# Cernicharo 2020 upper limit
+HOCN 	<- 1.9e-12   #Agundez 2013 borne sup
+#NH2CHO	<- 5.2e-11	# upper limit Lopez-Sepulcre 2015 ASAI
+HCNO 	<- 1.4e-12   #Marcelino 2009 borne sup
+#HCOCN 	<- 3.5e-11	# Cernicharo 2021
+### Sulfur
+#H2S  	<- 7.0e-10  #Minh 1989
+H2S 	<- 2.0e-9	# TMC1-CP, n(H2)=2.26e4 Fuente2019_GEMS
+NS  	<- 8.0e-10  #McGonagle 1994
+#NS  	<- 1.7e-10  # Cernicharo_2018
+N#Sp  	<- 5.2e-12  # Cernicharo_2018
+#SO  	<- 1.5e-9  #Agundez 2013
+SO  	<- 1.0e-8  #Lique 2006
+#SO_CPa 		<- 3.4e13/18.2e21	# TMC1-CP, n(H2)=1.52e4 # Fuente019/GEMS
+#SO_CPb 		<- 2.0e13/16.71e21	# TMC1-CP, n(H2)=2.26e4 # Fuente019/GEMS
+#SO_CPc 		<- 2.2e13/13.74e21	# TMC1-CP, n(H2)=3.75e4 # Fuente019/GEMS
+#SO_GEMs <- (SO_CPa+SO_CPb+SO_CPc)/3 # Fuente019/GEMS
+#HSO 	<- 7e-12	# Marcelino_2023
+SO2  	<- 3.0e-10  #Cernicharo 2011
+CS  	<- 1.3E-8 # 68*13CS Gratier 2016 2.9e-9  ##Pratap1997
+#CS		<- 3.5e-8	# Cernicharo 2021
+#CS 	<- 9.6e13/16.71e21	# TMC1-CP, n(H2)=2.26e4 Fuente019/GEMS
+#CZ  	<- 10^12.70/1e22 # Gratier 2016
+#GS  	<- 10^12.26/1e22 # Gratier 2016
+#CZ		<- 1.45e-9	# Cernicharo 2021
+#GZ		<- 1.45e-11	# Cernicharo 2021
+HCS+  	<- 2.0e-10 # average of: 10^12.70/1e22  # Gratier 2016 3.0e-10  #Agundez 2013 and 2.0e12/16.71e21	# TMC1-CP, n(H2)=2.26e4 Fuente019/GEMS
+#HCS 	<- 5.5e-10	# Cernicharo 2021
+#HSC 	<- 1.3e-12	# Cernicharo 2021
+H2CS  	<- 5.2E-9 # Gratier 2016 7.0e-10  #Agundez 2013
+#C2S  	<- 1.0E-8 # Gratier 2016 7.0e-9  #Agundez 2013
+C2S 	<- 3.4e-9 # Fuentetaja (in prep in 2024, see Amélie Thesis)
+#GCS 	<- 8.4e-12 # Fuentetaja (in prep in 2024, see Amélie Thesis)
+#CGS 	<- 5.7e-11 # Fuentetaja (in prep in 2024, see Amélie Thesis)
+#HCCS 	<- 6.6e-11	# Cernicharo 2021
+#HCCS+ 	<- 1.1e-10	# Cabezas 2022
+#H2CCS 	<- 7.8e-11	# Cernicharo 2021
+#CH3CHS <- 9.8e10/1e22	# Agundez 2025
+#CH3CHS <- 1e-9		# Margulès 2020 upper limit
+C3S  	<- 1.4E-9 # Gratier 2016 1.0e-9  #Agundez 2013
+#C3S  	<- 1.0E-9 # Agundez 2013
+#HC3S 	<- 2.4e-11	# Cernicharo 2021	upper limit
+#HC3S+ 	<- 2.0e11/1e22	# Cernicharo 2021
+#HCCCHS <- 3.2e-11	# Cernicharo 2021 
+#H2C3S 	<- 3.7e-11	# Cernicharo 2021
+#c-H2C3S 	<- 5.72e10/1e22	# Remijan 2025
+#C2H3CHS <- 4.4e10/1e22	# Cabezas_2025
+#C4S 	<- 3.8e-12	# Cernicharo 2021
+#C5S 	<- 5.0e-12	# Cernicharo 2021
+OCS  	<- 2.2e-9  #Mathews 1994
+#NCS 	<- 7.8e11/1e22		# Cernicharo 2021
+HNCS 	<- 8.3e-12   #Adande 2010
+HSCN 	<- 6.4e-12   #Adande 2010
+#HCSCN 	<- 1.3e-10			# Cernicharo 2021
+### Others
+#C+ 	<- 2e11/1e22		# Pepe 2021 (mail)
+#PN 	<- 6.2e-12			# Turner_1990 upper limit
+#PN 	<- 1.5e10/1e22		# Pepe 2021 (mail) upper limit
+#SiO 	<- 2.4e-12			# Turner_1998 upper limit
+#SiO 	<- 6.0e-13			# Pepe 2021 (mail) upper limit
+############
+## Ice #####
+## Boogert_2015, Table 2, LYSOs (Av=12-20)
+# fraction de H2O (Gross 2026: H2O/H=2e-5_6e-5)
+#CO_Ice <- 0.21
+#CO2_Ice <- 0.28
+#CH3OH_Ice <- 0.08
+#NH3_Ice <- 0.06
+#CH4_Ice <- 0.045
+#H2CO_Ice <- 0.06
+#OCN-_Ice <- 0.006
+#OCS_Ice <- 0.001 # MYSOs
+#SO2_Ice <- 0.002
+
+
+

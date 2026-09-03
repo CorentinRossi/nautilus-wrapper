@@ -1,5 +1,6 @@
 """Nautilus Wrapper GUI - A PyQt6 interface for the Nautilus astrochemistry code."""
 
+import math
 import operator as _op
 import re
 import sys
@@ -7,21 +8,32 @@ from pathlib import Path
 
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
-    QDockWidget, QListWidget, QPushButton, QLabel, QComboBox, QLineEdit,
-    QFileDialog, QGroupBox, QMessageBox, QPlainTextEdit, QTextEdit,
+    QDockWidget, QListWidget, QListWidgetItem, QPushButton, QLabel, QComboBox,
+    QLineEdit, QFileDialog, QGroupBox, QMessageBox, QPlainTextEdit, QTextEdit,
     QTableView, QHeaderView, QProgressBar, QStackedWidget, QInputDialog,
-    QTabWidget, QDialog, QDialogButtonBox,
+    QTabWidget, QDialog, QDialogButtonBox, QFormLayout,
+    QListView, QTreeView, QAbstractItemView, QSpinBox, QGridLayout,
 )
 from PyQt6.QtCore import Qt, QThread, pyqtSignal, QAbstractTableModel, QModelIndex, QSortFilterProxyModel
 from PyQt6.QtGui import QFont, QColor, QTextCharFormat, QSyntaxHighlighter, QAction
 
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg, NavigationToolbar2QT
 from matplotlib.figure import Figure
+from matplotlib.lines import Line2D
+from matplotlib.ticker import NullLocator
 
 try:
-    from .parsers import PARSERS, SERIALIZERS, ELEMENT_COLS, parse_species
+    from .parsers import (
+        PARSERS, SERIALIZERS, ELEMENT_COLS, parse_species,
+        parse_observations, evaluate_observations,
+        parse_control_grid, obs_name_to_species, CONTROL_GRID_SIZE,
+    )
 except ImportError:
-    from parsers import PARSERS, SERIALIZERS, ELEMENT_COLS, parse_species
+    from parsers import (
+        PARSERS, SERIALIZERS, ELEMENT_COLS, parse_species,
+        parse_observations, evaluate_observations,
+        parse_control_grid, obs_name_to_species, CONTROL_GRID_SIZE,
+    )
 
 
 REQUIRED_INPUT_FILES = [
@@ -38,14 +50,74 @@ REQUIRED_INPUT_FILES = [
     "structure_evolution.dat",
 ]
 
+# Not part of the required set: absent by default, not included in the
+# "empty input files" export check, and auto-created (empty) with a warning
+# the first time a run is launched without one.
+OPTIONAL_INPUT_FILES = ["observations.txt"]
+ALL_INPUT_FILES = REQUIRED_INPUT_FILES + OPTIONAL_INPUT_FILES
+
 STRUCTURED_FILES = set(PARSERS.keys())
 HEAVY_FILES = {"gas_reactions.in", "grain_reactions.in"}
 REACTION_FILES = {"gas_reactions.in", "grain_reactions.in"}
+# Files whose structured view shows a per-row activate/deactivate checkbox.
+TOGGLE_ACTIVE_FILES = REACTION_FILES | {"observations.txt"}
+# Among those, files where an unchecked row is written back out as a '#'
+# comment (kept, but disabled) rather than dropped — and whose checkbox
+# state on load comes from the file's own '#' markers, not a blanket default.
+PRESERVE_INACTIVE_FILES = {"observations.txt"}
 CHUNK_SIZE = 4000
 
 
 ASSETS_DIR = Path(__file__).resolve().parent.parent / "inputs"
 OUTPUTS_DIR = Path(__file__).resolve().parent.parent / "outputs"
+# "Plot controls" reads every *.txt in this folder as one 4x4 grid (one per
+# element, e.g. C.txt / N.txt / O.txt / S.txt / ions.txt), each drawn as its
+# own sub-tab. Kept out of the input sets so it's shared across runs.
+CONTROL_PLOTS_DIR = Path(__file__).resolve().parent.parent / "control_plots"
+
+# Default x-axis range (time, years) for every plot; editable in Edit ▸
+# Settings ▸ Plotting.
+DEFAULT_PLOT_XLIM = (1e3, 1e7)
+
+# Key atoms the distance of disagreement is broken down over.
+KEY_ATOMS = ("C", "N", "O", "S")
+# Every Nautilus ab/ output value is multiplied by this on read: the raw
+# columns are per H2, so ×2 gives the abundance relative to H (total H
+# nuclei) — the quantity every plot and the disagreement metric use.
+NAUTILUS_OUTPUT_SCALE = 2.0
+# log10 floor so a predicted 0 doesn't blow up log10().
+_LOG_FLOOR = 1e-300
+# Abundances below this are treated as "absent" when plotting log10(abundance)
+# so a curve dipping to ~1e-30 can't dominate the shared y-range.
+_DISPLAY_FLOOR = 1e-20
+
+# In the abundance plot each species gets a colour and each output a
+# linestyle. Session runs (nautilus run this session) are always solid;
+# imported outputs cycle through these.
+_SPECIES_PALETTE = [
+    "#1f77b4", "#ff7f0e", "#2ca02c", "#d62728", "#9467bd", "#8c564b",
+    "#e377c2", "#7f7f7f", "#bcbd22", "#17becf", "#aec7e8", "#ffbb78",
+    "#98df8a", "#ff9896", "#c5b0d5", "#c49c94", "#f7b6d2", "#c7c7c7",
+    "#dbdb8d", "#9edae5",
+]
+_IMPORT_LINESTYLES = ["--", "-.", ":", (0, (5, 1, 1, 1)), (0, (3, 1, 1, 1, 1, 1))]
+
+
+def _log10(vals):
+    """log10 of each value; non-positive -> nan (leaves a gap in the plot)."""
+    return [math.log10(v) if v > 0 else math.nan for v in vals]
+
+
+def _xlim_log10(xlim):
+    """Convert a (min, max) year range to its log10 for the linear time axis."""
+    return None if not xlim else (math.log10(xlim[0]), math.log10(xlim[1]))
+
+
+def fmt_num(x: float) -> str:
+    """Compact number for a settings text field: ``1000.0`` -> ``1000``,
+    ``1e7`` -> ``1e7``."""
+    s = f"{x:g}"
+    return s.replace("e+0", "e").replace("e-0", "e-").replace("e+", "e")
 
 def get_input_sets() -> dict[str, Path]:
     """Scan ASSETS_DIR for subdirectories containing input files."""
@@ -68,7 +140,7 @@ def find_ambiguities(set_dir: Path) -> dict[str, list[Path]]:
     all_files = [f for f in set_dir.iterdir() if f.is_file()]
     groups: dict[str, list[Path]] = {}
 
-    for expected in REQUIRED_INPUT_FILES:
+    for expected in ALL_INPUT_FILES:
         stem, _, ext = expected.rpartition(".")
         matches = [
             f for f in all_files
@@ -360,14 +432,32 @@ class TableModel(QAbstractTableModel):
             return True
         return False
 
-    def to_dicts(self, only_active: bool = True) -> list[dict]:
+    def to_dicts(self, only_active: bool = True, include_active: bool = False) -> list[dict]:
         data_headers = self.data_headers()
         result = []
         for i, row in enumerate(self._data):
             if only_active and self._active_col is not None and not self._active[i]:
                 continue
-            result.append(dict(zip(data_headers, row)))
+            d = dict(zip(data_headers, row))
+            if include_active:
+                d["_active"] = self._active[i] if self._active_col is not None else True
+            result.append(d)
         return result
+
+    def set_active_flags(self, flags: list[bool]):
+        """Set each row's checkbox state directly, in row order (used to seed
+        activation from the file's own markup instead of a blanket default)."""
+        if not self._data:
+            return
+        n = min(len(flags), len(self._active))
+        self._active[:n] = flags[:n]
+        self.dataChanged.emit(
+            self.index(0, 0),
+            self.index(self.rowCount() - 1, self.columnCount() - 1),
+            [Qt.ItemDataRole.CheckStateRole,
+             Qt.ItemDataRole.BackgroundRole,
+             Qt.ItemDataRole.ForegroundRole],
+        )
 
     def toggle_all(self, state: bool):
         if self._active_col is None or not self._data:
@@ -702,6 +792,7 @@ class StructuredView(QWidget):
 
         self._parser = None
         self._serializer = None
+        self._filename: str | None = None
         self._worker: LoadWorker | None = None
         self._active_col = False
         self.model.dataChanged.connect(self._update_info)
@@ -715,7 +806,8 @@ class StructuredView(QWidget):
         if not self._parser:
             return
 
-        self._active_col = filename in REACTION_FILES
+        self._filename = filename
+        self._active_col = filename in TOGGLE_ACTIVE_FILES
         self._toggle_bar.setVisible(self._active_col)
 
         heavy = filename in HEAVY_FILES
@@ -723,6 +815,10 @@ class StructuredView(QWidget):
         if not heavy:
             rows, headers = self._parser(text)
             self.model.set_data(rows, headers, active_col=self._active_col)
+            if filename in PRESERVE_INACTIVE_FILES:
+                # Seed checkboxes from the file's own '#' markers instead of
+                # defaulting everything active.
+                self.model.set_active_flags([bool(r.get("_active", True)) for r in rows])
             self._fit_columns()
             self._resize_checkbox_col()
             self._update_info()
@@ -773,13 +869,14 @@ class StructuredView(QWidget):
     def _update_info(self):
         if not self._active_col or not self.model._active:
             return
+        noun = "reactions" if self._filename in REACTION_FILES else "rows"
         total = len(self.model._active)
         visible = len(self.model._visible_rows())
         active = sum(1 for i in self.model._visible_rows() if self.model._active[i])
         if visible == total:
-            self._toggle_info.setText(f"{active}/{total} reactions active")
+            self._toggle_info.setText(f"{active}/{total} {noun} active")
         else:
-            self._toggle_info.setText(f"{active}/{visible}/{total} reactions active (filtered)")
+            self._toggle_info.setText(f"{active}/{visible}/{total} {noun} active (filtered)")
 
     def _apply_filter(self):
         expr = self._filter_input.text().strip()
@@ -822,6 +919,8 @@ class StructuredView(QWidget):
     def to_text(self) -> str:
         if not self._serializer:
             return ""
+        if self._filename in PRESERVE_INACTIVE_FILES:
+            return self._serializer(self.model.to_dicts(only_active=False, include_active=True))
         return self._serializer(self.model.to_dicts())
 
 
@@ -832,7 +931,9 @@ def read_ab_file(path: Path, column: int = 1) -> tuple[list[float], list[float]]
     """Read a nautilus ``ab/<species>.ab`` file.
 
     Column 0 is time [years]; ``column`` (default 1, the first spatial point)
-    is the abundance relative to H. Comment/blank lines are skipped.
+    holds the abundance, scaled by :data:`NAUTILUS_OUTPUT_SCALE` on read so
+    every caller works in abundance relative to H. Comment/blank lines are
+    skipped.
     """
     times: list[float] = []
     values: list[float] = []
@@ -846,7 +947,7 @@ def read_ab_file(path: Path, column: int = 1) -> tuple[list[float], list[float]]
                 continue
             try:
                 t = float(parts[0])
-                v = float(parts[column])
+                v = float(parts[column]) * NAUTILUS_OUTPUT_SCALE
             except ValueError:
                 continue
             times.append(t)
@@ -862,7 +963,8 @@ class PlotView(QWidget):
         self._figure = Figure(figsize=(6, 4), layout="constrained")
         self._canvas = FigureCanvasQTAgg(self._figure)
         self._toolbar = NavigationToolbar2QT(self._canvas, self)
-        self._ax = self._figure.add_subplot(111)
+        self._axes: list = []
+        self._use_single()
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -871,8 +973,19 @@ class PlotView(QWidget):
 
         self.show_placeholder()
 
+    def _use_single(self):
+        self._figure.clear()
+        self._ax = self._figure.add_subplot(111)
+        self._axes = [self._ax]
+
+    def _use_grid(self, rows: int, cols: int):
+        self._figure.clear()
+        axs = self._figure.subplots(rows, cols, squeeze=False)
+        self._axes = list(axs.flat)
+        self._ax = self._axes[0]
+
     def show_placeholder(self, message='Run "Plot CO, H2O abundances" to see a plot here.'):
-        self._ax.clear()
+        self._use_single()
         self._ax.text(0.5, 0.5, message, ha="center", va="center",
                       transform=self._ax.transAxes, color="gray", fontsize=10)
         self._ax.set_xticks([])
@@ -880,12 +993,41 @@ class PlotView(QWidget):
         self._canvas.draw_idle()
 
     def plot_series(self, series: dict[str, tuple[list[float], list[float]]],
-                    title: str = "", xlabel: str = "Time [years]",
-                    ylabel: str = "Abundance"):
-        """``series`` maps a label -> (x values, y values); drawn on log-log axes."""
-        self._ax.clear()
+                    title: str = "", xlabel: str = "log₁₀ time [years]",
+                    ylabel: str = "Abundance", xlog: bool = True, ylog: bool = True,
+                    xlim: tuple[float, float] | None = None,
+                    observed: dict[str, float] | None = None,
+                    vline: float | None = None,
+                    black_labels: set[str] | None = None):
+        """``series`` maps a label -> (x values, y values). The x values are
+        times in years; when ``xlog`` they're plotted as log10 on a linear
+        axis (no minor ticks). ``ylog`` sets the y scale. ``xlim`` (a year
+        range) fixes the x-axis. ``observed`` maps a label to its observed
+        abundance, drawn as a dashed horizontal bar in the curve's colour.
+        ``vline`` (a year) draws a solid black vertical line. ``black_labels``
+        draws those series as a thick black line on top; when set, every
+        other series is drawn thin and faint."""
+        self._use_single()
         for label, (xs, ys) in series.items():
-            self._ax.loglog(xs, ys, label=label)
+            if black_labels and label in black_labels:
+                kw = dict(color="black", lw=2.6, zorder=10)
+            elif black_labels:
+                kw = dict(lw=0.9, alpha=0.45, zorder=2)
+            else:
+                kw = {}
+            line, = self._ax.plot(_log10(xs) if xlog else xs, ys, label=label, **kw)
+            ov = observed.get(label) if observed else None
+            if ov and ov > 0:
+                self._ax.axhline(ov, color=line.get_color(), ls="--",
+                                 lw=0.9, alpha=0.7)
+        self._ax.set_xscale("linear")
+        self._ax.set_yscale("log" if ylog else "linear")
+        self._ax.xaxis.set_minor_locator(NullLocator())
+        if xlim:
+            self._ax.set_xlim(*(_xlim_log10(xlim) if xlog else xlim))
+        if vline is not None:
+            self._ax.axvline(math.log10(vline) if xlog else vline,
+                             color="black", lw=1)
         self._ax.set_xlabel(xlabel)
         self._ax.set_ylabel(ylabel)
         self._ax.grid(True, which="both", linestyle=":", alpha=0.5)
@@ -899,6 +1041,217 @@ class PlotView(QWidget):
         if title:
             self._ax.set_title(title)
         self._canvas.draw_idle()
+
+    def set_xlim(self, xlim: tuple[float, float] | None):
+        """Re-apply the x-range (a year range) to an already-drawn plot."""
+        if xlim and self._ax.lines:
+            self._ax.set_xlim(*_xlim_log10(xlim))
+            self._canvas.draw_idle()
+
+    def plot_abundances(self, curves, species_order, output_styles,
+                        observed=None, vline=None,
+                        xlim: tuple[float, float] | None = None, title: str = ""):
+        """Overlay abundance curves for several outputs.
+
+        ``curves``        : list of ``(species, output_name, linestyle, xs, ys)``
+        ``species_order`` : species names, in colour order
+        ``output_styles`` : list of ``(output_name, linestyle)`` in display order
+        ``observed``      : ``{species: observed abundance}`` -> dashed bar
+        """
+        self._ax.clear()
+        colour = {s: _SPECIES_PALETTE[i % len(_SPECIES_PALETTE)]
+                  for i, s in enumerate(species_order)}
+
+        for sp, _out, ls, xs, ys in curves:
+            self._ax.plot(_log10(xs), ys, color=colour.get(sp, "black"),
+                          linestyle=ls, lw=1.2)
+
+        if observed:
+            for sp in species_order:
+                ov = observed.get(sp)
+                if ov and ov > 0:
+                    self._ax.axhline(ov, color=colour[sp], ls="--", lw=0.9, alpha=0.6)
+
+        self._ax.set_xscale("linear")
+        self._ax.set_yscale("log")
+        self._ax.xaxis.set_minor_locator(NullLocator())
+        if xlim:
+            self._ax.set_xlim(*_xlim_log10(xlim))
+        if vline is not None:
+            self._ax.axvline(math.log10(vline), color="black", lw=1)
+        self._ax.set_xlabel("log₁₀ time [years]")
+        self._ax.set_ylabel("Abundance (rel. to H)")
+        self._ax.grid(True, which="both", linestyle=":", alpha=0.5)
+
+        sp_handles = [Line2D([], [], color=colour[s], lw=1.6) for s in species_order]
+        sp_legend = self._ax.legend(
+            sp_handles, species_order, loc="best", fontsize="x-small",
+            ncol=(2 if len(species_order) > 10 else 1), title="species",
+        )
+        self._ax.add_artist(sp_legend)
+        if len(output_styles) > 1:
+            out_handles = [Line2D([], [], color="black", linestyle=ls)
+                           for _n, ls in output_styles]
+            self._ax.legend(out_handles, [n for n, _ls in output_styles],
+                            loc="lower left", fontsize="x-small", title="output")
+        if title:
+            self._ax.set_title(title)
+        self._canvas.draw_idle()
+
+
+class ControlPlotsView(QWidget):
+    """A NxN grid of small abundance panels (the "Control plots" tab).
+
+    Cell (0, 0) is the distance-of-disagreement curve; every other cell
+    overlays the abundance-vs-time curves for the species assigned to it in
+    ``control_plots.txt``.
+    """
+
+    def __init__(self, n: int = CONTROL_GRID_SIZE, parent=None):
+        super().__init__(parent)
+        self._n = n
+        # Fixed margins (no constrained/tight layout solve) — the grid is
+        # always the same shape, so pay that cost once here, not every draw.
+        self._figure = Figure(figsize=(11, 9))
+        self._figure.subplots_adjust(left=0.065, right=0.985, top=0.93,
+                                     bottom=0.075, wspace=0.14, hspace=0.18)
+        self._canvas = FigureCanvasQTAgg(self._figure)
+        self._toolbar = NavigationToolbar2QT(self._canvas, self)
+        self._axes = self._figure.subplots(n, n, squeeze=False)
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.addWidget(self._toolbar)
+        layout.addWidget(self._canvas)
+        self.show_placeholder()
+
+    def show_placeholder(self, message='Click "Plot controls" to draw the grid.'):
+        for ax in self._axes.flat:
+            ax.clear()
+            ax.set_xticks([])
+            ax.set_yticks([])
+        self._axes[0][0].text(
+            0.5, 0.5, message, ha="center", va="center",
+            transform=self._axes[0][0].transAxes, color="gray", fontsize=9,
+        )
+        self._canvas.draw_idle()
+
+    @staticmethod
+    def _fit_y_to_x(ax, x0: float, x1: float):
+        """Set the panel's y-limits to the data visible in ``[x0, x1]``
+        (curve points in range + any horizontal-bar levels)."""
+        ys: list[float] = []
+        for ln in ax.lines:
+            xd, yd = ln.get_xdata(), ln.get_ydata()
+            if len(xd) == 2 and xd[0] == xd[1]:          # a vertical line
+                continue
+            if len(xd) == 2 and len(yd) == 2 and yd[0] == yd[1]:   # an axhline
+                ys.append(yd[0])
+                continue
+            for x, y in zip(xd, yd):
+                if x0 <= x <= x1 and y == y and y not in (math.inf, -math.inf):
+                    ys.append(y)
+        if not ys:
+            return
+        lo, hi = min(ys), max(ys)
+        pad = 0.06 * (hi - lo) or 0.5
+        ax.set_ylim(lo - pad, hi + pad)
+
+    def plot_grid(self, cells: list[list[dict]], disagreement, run_name: str = "",
+                  xlim: tuple[float, float] | None = None):
+        """``cells`` is an ``n x n`` list of ``{label: (xs, ys, observed)}``
+        dicts (cell [0][0] is ignored; ``observed`` is the observed abundance
+        or ``None``); ``disagreement`` is ``(xs, ys)`` or ``None``.
+
+        Species panels plot ``log10(abundance)`` vs ``log10(time)`` on linear
+        axes (no x minor ticks, no axis labels), sharing the x-range but each
+        auto-scaling y to the data inside it. Every panel gets a black
+        vertical line at the time of minimum disagreement; cell (0, 0) draws
+        D(t) itself in black.
+        """
+        n = self._n
+        tmin = None
+        if disagreement and disagreement[0]:
+            dx, dy = disagreement
+            tmin = dx[min(range(len(dy)), key=dy.__getitem__)]
+        lvline = math.log10(tmin) if tmin else None
+
+        xr = _xlim_log10(xlim)
+        if xr is None and disagreement and disagreement[0]:
+            lx = _log10(disagreement[0])
+            xr = (min(lx), max(lx))
+
+        for r in range(n):
+            for c in range(n):
+                ax = self._axes[r][c]
+                ax.clear()
+                ax.tick_params(labelsize=6)
+                ax.grid(True, which="both", linestyle=":", alpha=0.4)
+                ax.xaxis.set_minor_locator(NullLocator())
+                if xr:
+                    ax.set_xlim(*xr)
+
+                if r == 0 and c == 0:
+                    if disagreement and disagreement[0]:
+                        dx, dy = disagreement
+                        ax.plot(_log10(dx), dy, lw=1.2, color="black")
+                        mi = min(range(len(dy)), key=dy.__getitem__)
+                        ax.text(0.5, 0.94, f"age={dx[mi]:.2e}, D={dy[mi]:.2f}",
+                                transform=ax.transAxes, ha="center", va="top",
+                                fontsize=6)
+                    else:
+                        ax.text(0.5, 0.5, "no observations", ha="center", va="center",
+                                transform=ax.transAxes, color="gray", fontsize=8)
+                    ax.set_title("Distance of disagreement", fontsize=8)
+                    if lvline is not None:
+                        ax.axvline(lvline, color="black", lw=1)
+                    if xr:
+                        self._fit_y_to_x(ax, *xr)
+                    continue
+
+                series = cells[r][c] if r < len(cells) and c < len(cells[r]) else {}
+                if not series:
+                    ax.text(0.5, 0.5, "—", ha="center", va="center",
+                            transform=ax.transAxes, color="lightgray", fontsize=12)
+                    if lvline is not None:
+                        ax.axvline(lvline, color="black", lw=1)
+                    continue
+
+                for label, (xs, ys, observed) in series.items():
+                    ly = [math.log10(v) if v > _DISPLAY_FLOOR else math.nan
+                          for v in ys]
+                    line, = ax.plot(_log10(xs), ly, lw=1, label=label)
+                    if observed and observed > 0:
+                        ax.axhline(math.log10(observed), color=line.get_color(),
+                                   ls="--", lw=0.9, alpha=0.7)
+                if lvline is not None:
+                    ax.axvline(lvline, color="black", lw=1)
+                ax.legend(fontsize=5, loc="best", ncol=1, handlelength=1.1,
+                          borderpad=0.2, labelspacing=0.2, borderaxespad=0.2)
+                if xr:
+                    self._fit_y_to_x(ax, *xr)
+
+        self._figure.supxlabel("log₁₀ time [years]", fontsize=8)
+        self._figure.supylabel("log₁₀ abundance (rel. to H)", fontsize=8)
+        self._figure.suptitle(
+            f"Control plots — {run_name}" if run_name else "Control plots", fontsize=10
+        )
+        self._canvas.draw_idle()
+
+    def set_xlim(self, xlim: tuple[float, float] | None):
+        """Re-apply the shared x-range (a year range) and re-fit y to it."""
+        xr = _xlim_log10(xlim)
+        if not xr:
+            return
+        drawn = False
+        for row in self._axes:
+            for ax in row:
+                if ax.lines or ax.texts:
+                    ax.set_xlim(*xr)
+                    self._fit_y_to_x(ax, *xr)
+                    drawn = True
+        if drawn:
+            self._canvas.draw_idle()
 
 
 # ---------------------------------------------------------------------------
@@ -946,6 +1299,127 @@ class ExportSettingsDialog(QDialog):
     def base_dir(self) -> Path | None:
         text = self._dir_edit.text().strip()
         return Path(text).expanduser() if text else None
+
+
+# ---------------------------------------------------------------------------
+# Settings window (its own top-level, non-modal window)
+# ---------------------------------------------------------------------------
+class SettingsWindow(QDialog):
+    """Tabbed application settings — General (default outputs folder) and
+    Plotting (x-axis limits) — as a separate, non-modal window. Emits
+    :attr:`applied` with the validated values on OK / Apply.
+    """
+
+    applied = pyqtSignal(object)
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Settings")
+        self.setModal(False)
+        # A real independent window (own title bar, not glued on top of the
+        # main window).
+        self.setWindowFlag(Qt.WindowType.Window, True)
+        self.setMinimumWidth(480)
+        layout = QVBoxLayout(self)
+
+        self._tabs = QTabWidget()
+        layout.addWidget(self._tabs)
+
+        # --- General ---
+        general = QWidget()
+        gform = QFormLayout(general)
+        dir_row = QHBoxLayout()
+        self._outputs_edit = QLineEdit()
+        browse = QPushButton("Browse…")
+        browse.setFixedWidth(84)
+        browse.clicked.connect(self._browse_outputs)
+        dir_row.addWidget(self._outputs_edit, 1)
+        dir_row.addWidget(browse)
+        gform.addRow("Default outputs folder:", dir_row)
+        self._tabs.addTab(general, "General")
+
+        # --- Plot settings ---
+        plotting = QWidget()
+        pform = QFormLayout(plotting)
+        self._xmin_edit = QLineEdit()
+        self._xmax_edit = QLineEdit()
+        pform.addRow("X min (years):", self._xmin_edit)
+        pform.addRow("X max (years):", self._xmax_edit)
+        hint = QLabel("X limits are applied to every plot's time axis.")
+        hint.setStyleSheet("color: #666;")
+        pform.addRow("", hint)
+
+        self._obs_combo = QComboBox()
+        self._obs_combo.addItem("Both", "both")
+        self._obs_combo.addItem("In control plots", "control")
+        self._obs_combo.addItem("In plots", "plots")
+        pform.addRow("Display observed abundances:", self._obs_combo)
+
+        self._tabs.addTab(plotting, "Plot settings")
+
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok
+            | QDialogButtonBox.StandardButton.Apply
+            | QDialogButtonBox.StandardButton.Cancel
+        )
+        buttons.button(QDialogButtonBox.StandardButton.Ok).clicked.connect(self._ok)
+        buttons.button(QDialogButtonBox.StandardButton.Apply).clicked.connect(self._apply)
+        buttons.rejected.connect(self.close)
+        layout.addWidget(buttons)
+
+    # -- populate / read -------------------------------------------------
+    def load(self, outputs_dir: str, xlim: tuple[float, float],
+             observed_display: str = "both"):
+        """Fill the fields from the current settings (called each open)."""
+        self._outputs_edit.setText(outputs_dir)
+        self._xmin_edit.setText(fmt_num(xlim[0]))
+        self._xmax_edit.setText(fmt_num(xlim[1]))
+        i = self._obs_combo.findData(observed_display)
+        self._obs_combo.setCurrentIndex(i if i >= 0 else 0)
+
+    def show_tab(self, index: int):
+        self._tabs.setCurrentIndex(index)
+
+    def _browse_outputs(self):
+        chosen = QFileDialog.getExistingDirectory(
+            self, "Default outputs folder", self._outputs_edit.text()
+        )
+        if chosen:
+            self._outputs_edit.setText(chosen)
+
+    def _validated(self) -> dict | None:
+        try:
+            xmin = float(self._xmin_edit.text())
+            xmax = float(self._xmax_edit.text())
+        except ValueError:
+            QMessageBox.warning(self, "Settings", "X limits must be numbers.")
+            self._tabs.setCurrentIndex(1)
+            return None
+        if not (xmin > 0 and xmax > xmin):
+            QMessageBox.warning(self, "Settings", "Need 0 < X min < X max.")
+            self._tabs.setCurrentIndex(1)
+            return None
+        if not self._outputs_edit.text().strip():
+            QMessageBox.warning(self, "Settings",
+                                "Default outputs folder can't be empty.")
+            self._tabs.setCurrentIndex(0)
+            return None
+        return {
+            "outputs_dir": Path(self._outputs_edit.text().strip()).expanduser(),
+            "xlim": (xmin, xmax),
+            "observed_display": self._obs_combo.currentData(),
+        }
+
+    def _apply(self):
+        vals = self._validated()
+        if vals is not None:
+            self.applied.emit(vals)
+
+    def _ok(self):
+        vals = self._validated()
+        if vals is not None:
+            self.applied.emit(vals)
+            self.close()
 
 
 # ---------------------------------------------------------------------------
@@ -1070,11 +1544,33 @@ class NautilusWrapper(QMainWindow):
         self.setMinimumSize(1200, 700)
         self._file_contents: dict[str, str] = {}
         self._mode = "comprehensive"
+        # Which file the editor / structured view currently hold, and a guard
+        # that suppresses the change->flush handlers while we populate a view
+        # programmatically (so a load doesn't look like a user edit).
+        self._current_file: str | None = None
+        self._syncing = False
         self._run_dir: Path | None = None
-        self._export_parent: Path = OUTPUTS_DIR  # where run folders are created
+        # Outputs available for the abundance plot: each entry is
+        # {path, name, session: bool, checked: bool, linestyle}. Session runs
+        # (nautilus run this session) sit on top and stay solid.
+        self._outputs: list[dict] = []
+        self._export_parent: Path = OUTPUTS_DIR  # default outputs folder
+        self._plot_xlim: tuple[float, float] = DEFAULT_PLOT_XLIM
+        # Where observed-abundance bars are drawn: "both" | "control" | "plots".
+        self._observed_display: str = "both"
+        self._plot_view_redraw = None  # last Plot-tab action, for live re-render
         self._files_exported = False
         self._exported_dirs: set[Path] = set()  # folders this session has written to
+        self._observations_warned: set[Path] = set()  # run dirs already warned about
         self._plot_selection: set[str] = set()
+        # Control-plots speedups: cache parsed ab/*.ab per run dir, keep the
+        # per-file grid widgets alive, and render each grid tab only when it's
+        # first shown.
+        self._ab_cache: dict[tuple[str, str], tuple | None] = {}
+        self._control_views: dict[str, ControlPlotsView] = {}
+        self._control_files: dict[str, Path] = {}
+        self._control_rendered: set[str] = set()
+        self._disagreement_cache = None
         self._input_sets = get_input_sets()
         self._current_set_dir: Path | None = None
         self._init_ui()
@@ -1097,7 +1593,7 @@ class NautilusWrapper(QMainWindow):
         if ambiguities:
             self._resolve_ambiguities(ambiguities, set_dir)
 
-        for fname in REQUIRED_INPUT_FILES:
+        for fname in ALL_INPUT_FILES:
             if fname in self._file_overrides:
                 path = self._file_overrides[fname]
             else:
@@ -1109,6 +1605,9 @@ class NautilusWrapper(QMainWindow):
         self._files_exported = False
         if self._run_dir is not None:
             self._folder_label.setText(str(self._run_dir) + " (modified)")
+        # The freshly-read contents supersede whatever the views hold; show
+        # them without flushing the old set's data back over the new.
+        self._refresh_current_view()
 
     def _resolve_ambiguities(self, ambiguities: dict[str, list[Path]], set_dir: Path):
         for expected, candidates in ambiguities.items():
@@ -1127,7 +1626,62 @@ class NautilusWrapper(QMainWindow):
             self._load_set(name)
             self.file_list.setCurrentRow(0)
 
+    def _init_menu(self):
+        self._settings_window: SettingsWindow | None = None
+        settings_act = QAction("Settings…", self)
+        # PreferencesRole => macOS moves it into the application menu (⌘,),
+        # the OS-standard spot; elsewhere it just sits in the Edit menu.
+        settings_act.setMenuRole(QAction.MenuRole.PreferencesRole)
+        settings_act.triggered.connect(lambda *_a: self._open_settings())
+
+        if sys.platform == "darwin":
+            # Any menu works as a carrier; Qt harvests the action into the
+            # app menu and hides the (now empty) carrier menu.
+            self.menuBar().addMenu("Settings").addAction(settings_act)
+        else:
+            settings_act.setShortcut("Ctrl+,")
+            self.menuBar().addMenu("&Edit").addAction(settings_act)
+
+    def _open_settings(self, tab: int = 0):
+        if self._settings_window is None:
+            self._settings_window = SettingsWindow(self)
+            self._settings_window.applied.connect(self._apply_settings)
+        win = self._settings_window
+        win.load(str(self._export_parent), self._plot_xlim, self._observed_display)
+        win.show_tab(tab)
+        win.show()
+        win.raise_()
+        win.activateWindow()
+
+    def _apply_settings(self, vals: dict):
+        self._export_parent = vals["outputs_dir"]
+        self._plot_xlim = vals["xlim"]
+        obs_changed = vals["observed_display"] != self._observed_display
+        self._observed_display = vals["observed_display"]
+        if self._run_dir is None:
+            self._folder_label.setText(f"New runs → {self._export_parent}")
+        # Push the new x-range onto everything already on screen.
+        self._plot_view.set_xlim(self._plot_xlim)
+        for view in self._control_views.values():
+            view.set_xlim(self._plot_xlim)
+        if obs_changed:
+            # Observed bars are baked in at plot time — re-draw every grid
+            # that's already been rendered, plus the current Plot-tab view.
+            stale = set(self._control_rendered)
+            self._control_rendered.clear()
+            for i in range(self._control_tabs.count()):
+                if self._control_tabs.tabText(i) in stale:
+                    self._render_control_tab(i)
+            if callable(self._plot_view_redraw) and self._plot_view._ax.lines:
+                self._plot_view_redraw()
+        self.statusBar().showMessage(
+            f"Settings saved · outputs → {self._export_parent} · "
+            f"x-limits {fmt_num(self._plot_xlim[0])}–{fmt_num(self._plot_xlim[1])} · "
+            f"observed bars: {vals['observed_display']}"
+        )
+
     def _init_ui(self):
+        self._init_menu()
         # Every panel is a dock widget: they can be dragged, floated, re-docked
         # anywhere, and stacked on top of each other to form tab groups.
         self.setDockNestingEnabled(True)
@@ -1164,7 +1718,7 @@ class NautilusWrapper(QMainWindow):
         left_lay.addWidget(self._set_combo)
 
         self.file_list = QListWidget()
-        for name in REQUIRED_INPUT_FILES:
+        for name in ALL_INPUT_FILES:
             self.file_list.addItem(name)
         self.file_list.currentTextChanged.connect(self._on_file_selected)
         left_lay.addWidget(self.file_list)
@@ -1201,11 +1755,11 @@ class NautilusWrapper(QMainWindow):
         self.editor.setFont(QFont("Monaco", 11))
         self.editor.setLineWrapMode(QPlainTextEdit.LineWrapMode.NoWrap)
         NautilusHighlighter(self.editor.document())
-        self.editor.textChanged.connect(self._mark_unexported)
+        self.editor.textChanged.connect(self._on_editor_changed)
         self._stack.addWidget(self.editor)
 
         self.struct_view = StructuredView(self._progress_bar)
-        self.struct_view.data_changed.connect(self._mark_unexported)
+        self.struct_view.data_changed.connect(self._on_struct_changed)
         self._stack.addWidget(self.struct_view)
 
         self._stack.setCurrentIndex(1)
@@ -1218,6 +1772,15 @@ class NautilusWrapper(QMainWindow):
         self._dock_plot.setFeatures(_NO_CLOSE)
         self._plot_view = PlotView()
         self._dock_plot.setWidget(self._plot_view)
+
+        # --- Control plots dock: one 4x4-grid sub-tab per element file ---
+        self._dock_control = QDockWidget("Control plots", self)
+        self._dock_control.setAllowedAreas(_ALL_AREAS)
+        self._dock_control.setFeatures(_NO_CLOSE)
+        self._control_tabs = QTabWidget()
+        self._control_tabs.setDocumentMode(True)
+        self._control_tabs.currentChanged.connect(self._render_control_tab)
+        self._dock_control.setWidget(self._control_tabs)
 
         # --- Right dock: actions ---
         dock_actions = QDockWidget("Actions", self)
@@ -1252,14 +1815,29 @@ class NautilusWrapper(QMainWindow):
         folder_lay.addLayout(export_row)
         right_lay.addWidget(folder_group)
 
-        import_group = QGroupBox("Import Output")
+        import_group = QGroupBox("Outputs to plot")
         import_lay = QVBoxLayout(import_group)
-        self.btn_import_output = QPushButton("Import output…")
+        imp_btn_row = QHBoxLayout()
+        self.btn_import_output = QPushButton("Import…")
         self.btn_import_output.setToolTip(
-            "Pick a previous run folder and plot its abundance results"
+            "Pick one or more previous run folders to overlay in the abundance plot"
         )
         self.btn_import_output.clicked.connect(self._import_output)
-        import_lay.addWidget(self.btn_import_output)
+        self.btn_remove_output = QPushButton("Remove")
+        self.btn_remove_output.setFixedWidth(80)
+        self.btn_remove_output.setToolTip("Remove the selected output from the list")
+        self.btn_remove_output.clicked.connect(self._remove_selected_output)
+        imp_btn_row.addWidget(self.btn_import_output, 1)
+        imp_btn_row.addWidget(self.btn_remove_output)
+        import_lay.addLayout(imp_btn_row)
+        self.output_list = QListWidget()
+        self.output_list.setMaximumHeight(120)
+        self.output_list.setToolTip(
+            "Checked outputs are overlaid by “Plot”. Each species keeps its "
+            "colour; each output gets its own linestyle (session runs solid)."
+        )
+        self.output_list.itemChanged.connect(self._on_output_item_changed)
+        import_lay.addWidget(self.output_list)
         right_lay.addWidget(import_group)
 
         run_group = QGroupBox("Run")
@@ -1281,6 +1859,22 @@ class NautilusWrapper(QMainWindow):
         plot_row.addWidget(self.btn_plot_settings)
         plot_row.addWidget(self.btn_run_plot, 1)
         run_lay.addLayout(plot_row)
+        self.btn_plot_disagreement = QPushButton("Plot Distance of Disagreement")
+        self.btn_plot_disagreement.setToolTip(
+            "For every activated observations.txt species with a matching "
+            "ab/<species>.ab file, sum |observed − predicted| abundance "
+            "over time and plot it"
+        )
+        self.btn_plot_disagreement.clicked.connect(self._run_plot_disagreement)
+        run_lay.addWidget(self.btn_plot_disagreement)
+        self.btn_plot_controls = QPushButton("Plot controls")
+        self.btn_plot_controls.setToolTip(
+            f"Draw a {CONTROL_GRID_SIZE}x{CONTROL_GRID_SIZE} grid for each "
+            f"{CONTROL_PLOTS_DIR.name}/*.txt file (top-left = distance of "
+            "disagreement) in the “Control plots” tab"
+        )
+        self.btn_plot_controls.clicked.connect(self._run_plot_controls)
+        run_lay.addWidget(self.btn_plot_controls)
         self._run_progress = QProgressBar()
         self._run_progress.setVisible(False)
         self._run_progress.setMaximumHeight(18)
@@ -1310,9 +1904,12 @@ class NautilusWrapper(QMainWindow):
         self.splitDockWidget(dock_files, self._dock_editor, Qt.Orientation.Horizontal)
         self.splitDockWidget(self._dock_editor, dock_actions, Qt.Orientation.Horizontal)
         self.splitDockWidget(dock_actions, dock_logs, Qt.Orientation.Vertical)
-        # Stack the plot on the editor -> two tabs in the same column.
+        # Stack the plots on the editor -> tabs in the same column. The
+        # "Control plots" tab stays hidden until "Plot controls" is clicked.
         self.tabifyDockWidget(self._dock_editor, self._dock_plot)
+        self.tabifyDockWidget(self._dock_plot, self._dock_control)
         self._dock_editor.raise_()
+        self._dock_control.hide()
 
         self.resizeDocks(
             [dock_files, self._dock_editor, dock_actions],
@@ -1323,26 +1920,90 @@ class NautilusWrapper(QMainWindow):
 
         self.statusBar().showMessage("Ready")
 
+    # -- text <-> structured linkage -------------------------------------
+    # The two views never diverge: every edit in either is flushed straight
+    # into ``self._file_contents`` (the single source of truth), and the
+    # other view is rebuilt from it whenever it next becomes visible — on a
+    # mode toggle or a file switch — so no change is ever lost or stale.
+
+    def _flush_views(self, fname: str | None):
+        """Write whatever the currently-shown view holds for ``fname`` back
+        into ``self._file_contents``."""
+        if not fname:
+            return
+        if self._mode == "text":
+            self._file_contents[fname] = self.editor.toPlainText()
+        elif fname in STRUCTURED_FILES:
+            self._file_contents[fname] = self.struct_view.to_text()
+
+    def _refresh_current_view(self):
+        """(Re)populate the active view from ``self._file_contents`` without
+        flushing first — for use after a bulk reload (input-set switch)."""
+        item = self.file_list.currentItem()
+        name = item.text() if item else None
+        self._current_file = name
+        if name is None:
+            return
+        self.file_label.setText(name)
+        self._syncing = True
+        try:
+            if self._mode == "text":
+                self.editor.setPlainText(self._file_contents.get(name, ""))
+            else:
+                self._load_struct_for_current()
+        finally:
+            self._syncing = False
+
+    def _on_editor_changed(self):
+        if self._syncing:
+            return
+        self._mark_unexported()
+        if self._mode == "text" and self._current_file:
+            self._file_contents[self._current_file] = self.editor.toPlainText()
+            if self._current_file == "observations.txt":
+                self._disagreement_cache = None
+
+    def _on_struct_changed(self):
+        if self._syncing:
+            return
+        self._mark_unexported()
+        if self._mode == "comprehensive" and self._current_file in STRUCTURED_FILES:
+            self._file_contents[self._current_file] = self.struct_view.to_text()
+            if self._current_file == "observations.txt":
+                self._disagreement_cache = None
+
     def _toggle_mode(self):
-        if self._mode == "comprehensive":
-            self._sync_struct_to_text()
-            self._mode = "text"
-            self._stack.setCurrentIndex(0)
-            self.btn_switch.setText("Switch to Structured Mode")
-        else:
-            self._mode = "comprehensive"
-            self._stack.setCurrentIndex(1)
-            self.btn_switch.setText("Switch to Text Mode")
-            self._load_struct_for_current()
+        self._flush_views(self._current_file)
+        self._syncing = True
+        try:
+            if self._mode == "comprehensive":
+                self._mode = "text"
+                self._stack.setCurrentIndex(0)
+                self.btn_switch.setText("Switch to Structured Mode")
+                self.editor.setPlainText(self._file_contents.get(self._current_file, ""))
+            else:
+                self._mode = "comprehensive"
+                self._stack.setCurrentIndex(1)
+                self.btn_switch.setText("Switch to Text Mode")
+                self._load_struct_for_current()
+        finally:
+            self._syncing = False
 
     def _on_file_selected(self, name: str):
         if name is None:
             return
+        if not self._syncing:
+            self._flush_views(self._current_file)
+        self._current_file = name
         self.file_label.setText(name)
-        if self._mode == "text":
-            self.editor.setPlainText(self._file_contents.get(name, ""))
-        else:
-            self._load_struct_for_current()
+        self._syncing = True
+        try:
+            if self._mode == "text":
+                self.editor.setPlainText(self._file_contents.get(name, ""))
+            else:
+                self._load_struct_for_current()
+        finally:
+            self._syncing = False
 
     def _load_struct_for_current(self):
         name = self.file_list.currentItem()
@@ -1355,15 +2016,6 @@ class NautilusWrapper(QMainWindow):
         else:
             self.struct_view.setVisible(False)
 
-    def _sync_struct_to_text(self):
-        name = self.file_list.currentItem()
-        if name is None:
-            return
-        name = name.text()
-        if name in STRUCTURED_FILES and self.struct_view.isVisible():
-            self._file_contents[name] = self.struct_view.to_text()
-        self.editor.setPlainText(self._file_contents.get(name, ""))
-
     def _next_run_dir(self, parent: Path | None = None) -> Path:
         """A ``<parent>/yyyymmdd_runN`` path, auto-incrementing N (default parent: outputs/)."""
         parent = parent or OUTPUTS_DIR
@@ -1375,6 +2027,9 @@ class NautilusWrapper(QMainWindow):
         return parent / f"{today}_run{n}"
 
     def _set_run_dir(self, path: Path, note: str = ""):
+        if path != self._run_dir:
+            self._disagreement_cache = None
+            self._control_rendered.clear()
         self._run_dir = path
         self._folder_label.setText(str(path) + (f"  {note}" if note else ""))
         self._folder_label.setStyleSheet("")
@@ -1411,38 +2066,99 @@ class NautilusWrapper(QMainWindow):
             self._folder_label.setText(f"New runs → {base}")
         self.statusBar().showMessage(f"Export location: {base}")
 
-    def _import_output(self):
-        """Pick a previous run folder and plot whatever abundance output it has."""
-        start = str(self._export_parent)
-        chosen = QFileDialog.getExistingDirectory(
-            self, "Select a previous run folder", start
-        )
-        if not chosen:
+    # -- outputs list --------------------------------------------------------
+    def _pick_output_dirs(self) -> list[Path]:
+        """A directory picker that allows selecting several folders at once."""
+        dlg = QFileDialog(self, "Select one or more run folders",
+                          str(self._export_parent))
+        dlg.setFileMode(QFileDialog.FileMode.Directory)
+        dlg.setOption(QFileDialog.Option.DontUseNativeDialog, True)
+        dlg.setOption(QFileDialog.Option.ShowDirsOnly, True)
+        for view in dlg.findChildren((QListView, QTreeView)):
+            view.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
+        if not dlg.exec():
+            return []
+        return [Path(p) for p in dlg.selectedFiles()]
+
+    def _assign_output_linestyles(self):
+        i = 0
+        for e in self._outputs:
+            if e.get("session"):
+                e["linestyle"] = "-"
+            else:
+                e["linestyle"] = _IMPORT_LINESTYLES[i % len(_IMPORT_LINESTYLES)]
+                i += 1
+
+    def _refresh_output_list(self):
+        self._assign_output_linestyles()
+        self.output_list.blockSignals(True)
+        self.output_list.clear()
+        for e in self._outputs:
+            label = e["name"] + ("  (session)" if e.get("session") else "")
+            it = QListWidgetItem(label)
+            it.setFlags(it.flags() | Qt.ItemFlag.ItemIsUserCheckable)
+            it.setCheckState(Qt.CheckState.Checked if e["checked"]
+                             else Qt.CheckState.Unchecked)
+            it.setData(Qt.ItemDataRole.UserRole, str(e["path"]))
+            it.setToolTip(str(e["path"]))
+            self.output_list.addItem(it)
+        self.output_list.blockSignals(False)
+
+    def _on_output_item_changed(self, item: QListWidgetItem):
+        p = item.data(Qt.ItemDataRole.UserRole)
+        for e in self._outputs:
+            if str(e["path"]) == p:
+                e["checked"] = item.checkState() == Qt.CheckState.Checked
+        if self._plot_view_redraw is not None and getattr(
+                self._plot_view_redraw, "__func__", None
+        ) is NautilusWrapper._run_plot_abundances:
+            self._run_plot_abundances()
+
+    def _remove_selected_output(self):
+        paths = {it.data(Qt.ItemDataRole.UserRole)
+                 for it in self.output_list.selectedItems()}
+        if not paths:
             return
-        folder = Path(chosen)
-        ab_dir = folder / "ab"
-        if not ab_dir.is_dir() or not any(ab_dir.glob("*.ab")):
+        self._outputs = [e for e in self._outputs if str(e["path"]) not in paths]
+        self._refresh_output_list()
+
+    def _register_session_output(self, path: Path):
+        """Put a run generated this session on top of the list, checked, solid."""
+        self._outputs = [e for e in self._outputs if e["path"] != path]
+        self._outputs.insert(0, {"path": path, "name": path.name,
+                                 "session": True, "checked": True})
+        self._refresh_output_list()
+
+    def _import_output(self):
+        """Add one or more previous run folders to the outputs list."""
+        added, skipped = [], []
+        for folder in self._pick_output_dirs():
+            ab_dir = folder / "ab"
+            if not ab_dir.is_dir() or not any(ab_dir.glob("*.ab")):
+                skipped.append(folder.name)
+                continue
+            if any(e["path"] == folder for e in self._outputs):
+                continue
+            self._outputs.append({"path": folder, "name": folder.name,
+                                  "session": False, "checked": True})
+            added.append(folder.name)
+        if skipped:
             QMessageBox.warning(
                 self, "No output",
-                f"No abundance output (an 'ab/' folder with .ab files) was found in:\n{folder}",
+                "No 'ab/' folder with .ab files in:\n  " + "\n  ".join(skipped),
             )
+        if not added:
             return
-        self._set_run_dir(folder, note="(imported)")
+        self._refresh_output_list()
+        # Point the disagreement / control-plot / run target at the import too.
+        self._set_run_dir(self._outputs[-1]["path"], note="(imported)")
         self._files_exported = False
-        if not self._plot_selection:
-            self._open_plot_settings()
+        self.statusBar().showMessage(f"Imported: {', '.join(added)}")
         if self._plot_selection:
             self._run_plot_abundances()
 
     def _sync_current_file(self):
-        name = self.file_list.currentItem()
-        if name is None:
-            return
-        name = name.text()
-        if self._mode == "text":
-            self._file_contents[name] = self.editor.toPlainText()
-        elif name in STRUCTURED_FILES:
-            self._file_contents[name] = self.struct_view.to_text()
+        self._flush_views(self._current_file)
 
     def _mark_unexported(self):
         self._files_exported = False
@@ -1521,7 +2237,32 @@ class NautilusWrapper(QMainWindow):
                 "Export to folder first."
             )
             return False
+        self._ensure_observations_file()
         return True
+
+    def _ensure_observations_file(self):
+        """If the run folder has no observations.txt (or an empty one),
+        write an empty placeholder and warn once — the "Plot Distance of
+        Disagreement" button needs observed abundances in it to do anything."""
+        if self._run_dir is None:
+            return
+        path = self._run_dir / "observations.txt"
+        has_content = path.exists() and bool(path.read_text(errors="replace").strip())
+        if has_content:
+            return
+        path.write_text("")
+        resolved = path.resolve()
+        if resolved in self._observations_warned:
+            return
+        self._observations_warned.add(resolved)
+        QMessageBox.warning(
+            self, "No Observations",
+            "No observations.txt was found for this input set (or it was "
+            f"empty).\n\nAn empty placeholder was created at:\n{path}\n\n"
+            'Add observed abundances to it (one "Species <- value  # ref" '
+            "line per species; prefix a line with '#' to deactivate it) to "
+            'enable the "Plot Distance of Disagreement" button.',
+        )
 
     def _log(self, text: str):
         self._log_view.append(text)
@@ -1563,6 +2304,13 @@ class NautilusWrapper(QMainWindow):
         self._run_progress.setVisible(False)
         self._run_progress_label.setVisible(False)
         if code == 0:
+            # Fresh ab/ output — drop the caches so the next plot re-reads it.
+            self._ab_cache.clear()
+            self._disagreement_cache = None
+            self._control_rendered.clear()
+            if label == "nautilus_outputs" and self._run_dir is not None \
+                    and (self._run_dir / "ab").is_dir():
+                self._register_session_output(self._run_dir)
             self.statusBar().showMessage(f"{label} completed successfully")
             self._log(f"[{label}] completed (exit 0)")
         else:
@@ -1616,11 +2364,14 @@ class NautilusWrapper(QMainWindow):
             )
 
     def _run_plot_abundances(self):
-        """Draw the currently-selected species from the ab/ output in the Plot tab."""
-        if self._run_dir is None:
+        """Overlay the selected species for every checked output in the Plot
+        tab — one colour per species, one linestyle per output."""
+        outs = [e for e in self._outputs if e["checked"]]
+        if not outs:
             QMessageBox.warning(
-                self, "No Folder",
-                "No working folder yet — export the inputs, or use “Import output”.",
+                self, "No output",
+                "No outputs are checked in “Outputs to plot”.\n\n"
+                "Run nautilus_outputs or use Import… to add a run folder.",
             )
             return
         if not self._plot_selection:
@@ -1631,35 +2382,376 @@ class NautilusWrapper(QMainWindow):
             )
             return
 
-        ab_dir = self._run_dir / "ab"
-        series: dict[str, tuple[list[float], list[float]]] = {}
+        self._assign_output_linestyles()
+        species = sorted(self._plot_selection)
+        curves = []          # (species, output_name, linestyle, xs, ys)
         missing: list[str] = []
-        for name in sorted(self._plot_selection):
-            path = ab_dir / f"{name}.ab"
-            if not path.exists():
-                missing.append(name)
-                continue
-            times, values = read_ab_file(path)
-            if times:
-                series[name] = (times, values)
+        for e in outs:
+            ab_dir = e["path"] / "ab"
+            for sp in species:
+                cv = self._cached_ab(ab_dir, sp)
+                if cv is None:
+                    missing.append(f"{e['name']}/{sp}")
+                    continue
+                curves.append((sp, e["name"], e["linestyle"], cv[0], cv[1]))
 
-        if not series:
+        if not curves:
             QMessageBox.warning(
                 self, "No abundance data",
-                f"None of the {len(self._plot_selection)} selected species have a "
-                f".ab file in:\n{ab_dir}\n\n"
-                "Run nautilus_code and then nautilus_outputs first.",
+                f"None of the {len(species)} selected species have a .ab file "
+                f"in the {len(outs)} checked output(s).\n\n"
+                "Run nautilus_code and nautilus_outputs first.",
             )
             return
 
-        self._plot_view.plot_series(series, title=f"Abundances - {self._run_dir.name}")
+        observed = (self._observed_map()
+                    if self._observed_display in ("both", "plots") else None)
+        title = ("Abundances - " + outs[0]["name"] if len(outs) == 1
+                 else f"Abundances - {len(outs)} outputs")
+        self._plot_view.plot_abundances(
+            curves, species, [(e["name"], e["linestyle"]) for e in outs],
+            observed=observed, vline=self._disagreement_tmin(),
+            xlim=self._plot_xlim, title=title,
+        )
+        self._plot_view_redraw = self._run_plot_abundances
         self._dock_plot.show()
         self._dock_plot.raise_()
         if missing:
             self._log(f"[Plot] no .ab file for: {', '.join(missing)}")
         self.statusBar().showMessage(
-            f"Plotted {len(series)} species from {ab_dir}"
+            f"Plotted {len(species)} species across {len(outs)} output(s)"
         )
+
+    def _observed_map(self) -> dict[str, float]:
+        """``{species-label: observed abundance}`` from the active
+        observations.txt (empty when there is none)."""
+        cache = self._disagreement_cache
+        if cache is not None and cache[1].get("observed"):
+            return cache[1]["observed"]
+        obs_text = self._file_contents.get("observations.txt", "")
+        if not obs_text.strip() and self._run_dir is not None:
+            p = self._run_dir / "observations.txt"
+            if p.exists():
+                obs_text = p.read_text(errors="replace")
+        if not obs_text.strip():
+            return {}
+        rows, _ = parse_observations(obs_text)
+        by, _ = evaluate_observations(rows)
+        return {lbl: val for lbl, (val, _c, _a) in by.items()}
+
+    def _disagreement_tmin(self) -> float | None:
+        """Time of minimum distance of disagreement for the current run, or
+        ``None`` when it can't be computed. Reuses / fills the cache."""
+        if self._disagreement_cache is None:
+            t, total, info = self._disagreement_curve()
+            self._disagreement_cache = ((t, total) if t is not None else None, info)
+        dis = self._disagreement_cache[0]
+        if not dis or not dis[0]:
+            return None
+        times, total = dis
+        return times[min(range(len(total)), key=total.__getitem__)]
+
+    def _cached_ab(self, ab_dir: Path, species: str):
+        """``read_ab_file`` for ``ab_dir/<species>.ab``, memoised per
+        (folder, species). The cache is dropped when a nautilus run
+        completes or the run dir changes.
+
+        Returns ``(times, values)`` or ``None`` (missing / empty).
+        """
+        key = (str(ab_dir), species)
+        hit = self._ab_cache.get(key, 0)  # 0 = not looked up yet
+        if hit != 0:
+            return hit
+        path = ab_dir / f"{species}.ab"
+        try:
+            res = read_ab_file(path)
+        except OSError:
+            res = None
+        if not res or not res[0]:
+            res = None
+        self._ab_cache[key] = res
+        return res
+
+    def _read_component_sum(self, ab_dir: Path, components):
+        """Sum the ``ab/<comp>.ab`` abundance curves for ``components`` on a
+        common time grid. Returns ``(times, values)`` or ``None`` if none of
+        the component .ab files exist."""
+        series = [cv for comp in components
+                  if (cv := self._cached_ab(ab_dir, comp)) is not None]
+        if not series:
+            return None
+        grid = max((t for t, _v in series), key=len)
+        summed = [0.0] * len(grid)
+        for _t, v in series:
+            for i in range(min(len(summed), len(v))):
+                summed[i] += v[i]
+        return grid, summed
+
+    def _disagreement_curve(self):
+        """Compute the distance-of-disagreement curve for the current run.
+
+        Species are grouped by key atom (C, N, O, S) from the ``### <name>``
+        section they sit under in observations.txt. For each atom an
+        intermediate curve is the mean over that section's observed species
+        of ``|log10(predicted(t)) − log10(observed)|`` (predicted is already
+        the ×2 abundance relative to H; normalised by the species count).
+        The returned curve is the species-count-weighted average of those
+        intermediates.
+
+        Returns ``(times, total, info)``; ``times`` is ``None`` when it can't
+        be computed, with ``info["reason"]`` explaining why. ``info`` also
+        carries ``per_atom`` (``{atom: (curve, n_species)}``), ``n_species``,
+        ``n_observed``, ``observed``, ``missing`` / ``partial`` / ``errors``.
+        """
+        info = {"reason": None, "n_species": 0, "n_observed": 0,
+                "missing": [], "partial": [], "errors": {}, "observed": {},
+                "per_atom": {}}
+        if self._run_dir is None:
+            info["reason"] = "No working folder yet — export the inputs, or use “Import output”."
+            return None, None, info
+
+        obs_text = self._file_contents.get("observations.txt", "")
+        if not obs_text.strip():
+            obs_path = self._run_dir / "observations.txt"
+            if obs_path.exists():
+                obs_text = obs_path.read_text(errors="replace")
+        if not obs_text.strip():
+            info["reason"] = ("observations.txt has no observed abundances to "
+                              "compare against.")
+            return None, None, info
+
+        rows, _ = parse_observations(obs_text)
+        obs_by_species, errors = evaluate_observations(rows)
+        info["errors"] = errors
+        info["n_observed"] = len(obs_by_species)
+        info["observed"] = {lbl: val for lbl, (val, _c, _a) in obs_by_species.items()}
+        if not obs_by_species:
+            info["reason"] = ("No activated (uncommented) line in "
+                              "observations.txt could be evaluated.")
+            return None, None, info
+
+        ab_dir = self._run_dir / "ab"
+        # atom -> list of per-species |Δlog10| curves
+        atom_terms: dict[str, list[list[float]]] = {a: [] for a in KEY_ATOMS}
+        used: set[str] = set()
+        times: list[float] | None = None
+
+        for label, (observed, components, atom) in obs_by_species.items():
+            res = self._read_component_sum(ab_dir, components)
+            if res is None:
+                info["missing"].append(
+                    f"{label} ({'+'.join(components)})"
+                    if len(components) > 1 else label
+                )
+                continue
+            grid, predicted = res
+            if len(components) > 1:
+                present = [c for c in components
+                           if self._cached_ab(ab_dir, c) is not None]
+                if len(present) < len(components):
+                    info["partial"].append(f"{label} (only {'+'.join(present)})")
+            if times is None or len(grid) > len(times):
+                times = grid
+
+            if atom not in KEY_ATOMS or observed <= 0:
+                continue
+            log_obs = math.log10(observed)
+            dlog = [abs(math.log10(max(p, _LOG_FLOOR)) - log_obs) for p in predicted]
+            atom_terms[atom].append(dlog)
+            used.add(label)
+
+        per_atom = {a: terms for a, terms in atom_terms.items() if terms}
+        if not per_atom or times is None:
+            info["reason"] = ("No observed species sit under a "
+                              "### Carbon/Nitrogen/Oxygen/Sulfur section with "
+                              f"matching .ab output in:\n{ab_dir}")
+            return None, None, info
+
+        n = len(times)
+        atom_curve: dict[str, list[float]] = {}
+        atom_n: dict[str, int] = {}
+        for a, terms in per_atom.items():
+            acc = [0.0] * n
+            for dl in terms:
+                for i in range(min(n, len(dl))):
+                    acc[i] += dl[i]
+            atom_n[a] = len(terms)
+            atom_curve[a] = [x / len(terms) for x in acc]   # normalise by count
+
+        total_w = sum(atom_n.values())
+        total = [0.0] * n
+        for a, curve in atom_curve.items():
+            w = atom_n[a]
+            for i in range(n):
+                total[i] += w * curve[i]
+        total = [x / total_w for x in total]                 # weighted average
+
+        info["per_atom"] = {a: (atom_curve[a], atom_n[a]) for a in atom_curve}
+        info["n_species"] = len(used)
+        return times, total, info
+
+    def _log_disagreement_notes(self, info: dict):
+        if info.get("missing"):
+            self._log(f"[Disagreement] no .ab output for: {', '.join(sorted(info['missing']))}")
+        if info.get("partial"):
+            self._log(f"[Disagreement] summed only part of: {', '.join(sorted(info['partial']))}")
+        if info.get("errors"):
+            self._log(
+                "[Disagreement] could not evaluate: "
+                + ", ".join(f"{k} ({v})" for k, v in info["errors"].items())
+            )
+
+    def _run_plot_disagreement(self):
+        """Plot the distance of disagreement — the C/N/O/S species-count-
+        weighted average of the per-atom mean ``|log10(predicted(t)) −
+        log10(observed)|`` (black) — plus each per-atom intermediate curve,
+        with a black vertical line at its minimum."""
+        times, total, info = self._disagreement_curve()
+        if times is None:
+            QMessageBox.warning(self, "Distance of Disagreement", info["reason"])
+            return
+
+        tmin = times[min(range(len(total)), key=total.__getitem__)]
+        series = {"D(t)": (times, total)}
+        for a, (curve, na) in sorted(info.get("per_atom", {}).items()):
+            series[f"{a}  ({na})"] = (times, curve)
+        self._plot_view.plot_series(
+            series,
+            title=f"Distance of Disagreement ({info['n_species']} species) - {self._run_dir.name}",
+            ylabel="distance of disagreement  [dex]",
+            xlog=True, ylog=False, xlim=self._plot_xlim,
+            vline=tmin, black_labels={"D(t)"},
+        )
+        self._plot_view_redraw = self._run_plot_disagreement
+        self._dock_plot.show()
+        self._dock_plot.raise_()
+        self._log_disagreement_notes(info)
+        self.statusBar().showMessage(
+            f"Plotted distance of disagreement over {info['n_species']} species"
+            + (f" ({len(info['missing'])} without output)" if info["missing"] else "")
+        )
+
+    def _run_plot_controls(self):
+        """Draw one NxN grid per ``control_plots/*.txt`` file, each in its own
+        sub-tab of the "Control plots" dock.
+
+        Cell (0, 0) of every grid is the distance-of-disagreement curve;
+        every other cell overlays the abundance-vs-time curves of the
+        species listed for it. In the file a line is a grid *column* (the
+        file's rows/columns are the transpose of the displayed grid). Only
+        the visible sub-tab is rendered now; the rest render when first shown.
+        """
+        if self._run_dir is None:
+            QMessageBox.warning(
+                self, "No Folder",
+                "No working folder yet — export the inputs, or use “Import output”.",
+            )
+            return
+
+        files = (
+            sorted(f for f in CONTROL_PLOTS_DIR.glob("*.txt")
+                   if f.read_text(errors="replace").strip())
+            if CONTROL_PLOTS_DIR.is_dir() else []
+        )
+        if not files:
+            QMessageBox.warning(
+                self, "No Control-Plots Files",
+                f"No non-empty *.txt grid files in:\n{CONTROL_PLOTS_DIR}\n\n"
+                f"Add one per element (e.g. C.txt): {CONTROL_GRID_SIZE} lines, "
+                f"{CONTROL_GRID_SIZE} '|'-separated cells per line, each cell a "
+                "species list. The first cell of the first line is always the "
+                "distance of disagreement.",
+            )
+            return
+
+        self._control_files = {f.stem: f for f in files}
+        self._control_rendered.clear()  # redraw on an explicit click
+        # _disagreement_cache is kept across clicks; it's invalidated on a run
+        # completing, the run dir changing, or observations.txt being edited.
+
+        stems = list(self._control_files)
+        current = [self._control_tabs.tabText(i)
+                   for i in range(self._control_tabs.count())]
+        if current != stems:
+            # Tabs get a cheap placeholder; the (expensive) matplotlib grid is
+            # built by _render_control_tab when the tab is first shown.
+            self._control_tabs.blockSignals(True)
+            while self._control_tabs.count():
+                self._control_tabs.removeTab(0)
+            for stem in stems:
+                placeholder = QLabel("  rendering…")
+                placeholder.setAlignment(Qt.AlignmentFlag.AlignCenter)
+                self._control_tabs.addTab(
+                    self._control_views.get(stem) or placeholder, stem
+                )
+            self._control_tabs.blockSignals(False)
+
+        self._dock_control.show()
+        self._dock_control.raise_()
+        self._render_control_tab(self._control_tabs.currentIndex())
+        self.statusBar().showMessage(
+            f"Control plots: {', '.join(stems)} "
+            f"(showing {stems[self._control_tabs.currentIndex()] if stems else ''})"
+        )
+
+    def _render_control_tab(self, idx: int):
+        """Build + draw one control-plot grid, lazily and once per replot."""
+        if idx < 0 or not self._control_files:
+            return
+        stem = self._control_tabs.tabText(idx)
+        if stem in self._control_rendered or stem not in self._control_files:
+            return
+        view = self._control_views.get(stem)
+        if view is None:
+            view = ControlPlotsView()
+            self._control_views[stem] = view
+            self._control_tabs.blockSignals(True)
+            self._control_tabs.removeTab(idx)
+            self._control_tabs.insertTab(idx, view, stem)
+            self._control_tabs.setCurrentIndex(idx)
+            self._control_tabs.blockSignals(False)
+
+        if self._disagreement_cache is None:
+            times, total, info = self._disagreement_curve()
+            self._disagreement_cache = (
+                (times, total) if times is not None else None, info
+            )
+            if self._disagreement_cache[0] is None:
+                self._log(f"[Control plots] distance of disagreement "
+                          f"unavailable: {info['reason']}")
+            else:
+                self._log_disagreement_notes(info)
+        disagreement, info = self._disagreement_cache
+        observed = (info.get("observed", {})
+                    if self._observed_display in ("both", "control") else {})
+
+        ab_dir = self._run_dir / "ab"
+        n = CONTROL_GRID_SIZE
+        raw = parse_control_grid(self._control_files[stem].read_text(errors="replace"))
+        # File lines/columns are the transpose of the displayed grid.
+        grid = [[raw[c][r] for c in range(n)] for r in range(n)]
+        cells: list[list[dict]] = [[{} for _ in range(n)] for _ in range(n)]
+        missing: list[str] = []
+        for r in range(n):
+            for c in range(n):
+                if r == 0 and c == 0:
+                    continue
+                for tok in grid[r][c]:
+                    label, components = obs_name_to_species(tok)
+                    res = self._read_component_sum(ab_dir, components)
+                    if res is None:
+                        missing.append(f"[{r},{c}] {tok}")
+                    else:
+                        xs, ys = res
+                        cells[r][c][label] = (xs, ys, observed.get(label))
+
+        view.plot_grid(cells, disagreement,
+                       run_name=f"{stem} — {self._run_dir.name}",
+                       xlim=self._plot_xlim)
+        self._control_rendered.add(stem)
+        if missing:
+            self._log(f"[Control plots] {stem}: no .ab output for: "
+                      + ", ".join(missing))
 
     def _find_nautilus_bin(self, name: str) -> Path | None:
         pnautilus = Path(__file__).resolve().parent.parent.parent / "pnautilus"

@@ -1,0 +1,12 @@
+# Control plots — Nitrogen (copied from TMC1_N.pdf)
+# NOTE: the displayed grid is the TRANSPOSE of this file — each line
+# below becomes a COLUMN of the plot (top cell = top of the column).
+#
+# 4 non-comment lines = grid rows; each split on '|' into 4 cells = columns.
+# Cell (row 0, col 0) is always the distance of disagreement (ignored here).
+#
+#  col 0                | col 1                      | col 2                       | col 3
+   -                    | N N2 N2H+                  | HCN HNC CN                  | H2CN H2NC HCNH
+   CH2NH                | HCCN H2C3N                 | CH2CN CH3CN CH2CNH CH3NC    | NH3 NH2 NH
+   NH2OH NH2CHO         | C2N C4N                    | C3N C5N C3N- C5N-           | HC3N HC3N+ HC5N HNC3 HNC5 HC4N HC7N
+   CH3C3N C3H3CN CH2C3N | C2H3CN C2H5CN C2H3C2H C3H5CN | C2N2 CNCN C2N2H+          |

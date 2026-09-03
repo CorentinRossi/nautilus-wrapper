@@ -4,6 +4,7 @@ Each parser returns a list of dicts (rows) and a list of column headers.
 The serialize function converts them back to the original text format.
 """
 
+import ast
 import re
 from typing import Any
 
@@ -419,6 +420,234 @@ def serialize_structure_evolution(rows: list[dict]) -> str:
 
 
 # ---------------------------------------------------------------------------
+# observations.txt
+#
+# An optional, per-input-set file of observed abundances, written in the R
+# style astrochemists already use for this ("Species <- expression # ref"),
+# one per line. A leading '#' deactivates a line (excludes it from the
+# distance-of-disagreement calculation) without deleting it; everything else
+# — banners, section headers, blank-separator comments — round-trips as a
+# comment-only row.
+# ---------------------------------------------------------------------------
+OBSERVATION_HEADERS = ["Species", "Expression", "Comment"]
+
+_OBS_ASSIGN_RE = re.compile(r"^(\S+)\s*(?:<-|=)\s*(.+)$")
+# "### <name>" section headers group the species by key atom; a bare
+# "####..." banner ends the current section.
+_OBS_SECTION_RE = re.compile(r"^#{3,}\s*(.*?)\s*$")
+_SECTION_ATOM = {"carbon": "C", "nitrogen": "N", "oxygen": "O",
+                 "sulfur": "S", "sulphur": "S"}
+
+
+def parse_observations(text: str) -> tuple[list[dict], list[str]]:
+    rows = []
+    atom: str | None = None  # key atom of the current "### <name>" section
+    for line in text.splitlines():
+        stripped = line.strip()
+        if not stripped:
+            continue
+
+        sec = _OBS_SECTION_RE.match(stripped)
+        if sec is not None:
+            name = sec.group(1).strip("# ").strip()
+            atom = _SECTION_ATOM.get(name.lower())
+
+        active = not stripped.startswith("#")
+        body = stripped if active else stripped[1:].strip()
+
+        code, _, comment = body.partition("#")
+        code = code.strip()
+        comment = comment.strip()
+
+        m = _OBS_ASSIGN_RE.match(code) if code else None
+        if m:
+            rows.append({
+                "Species": m.group(1),
+                "Expression": m.group(2).strip(),
+                "Comment": comment,
+                "_active": active,
+                "_atom": atom,
+            })
+        else:
+            # Not a "name <- expr" line even once uncommented (a banner, a
+            # section header, a stray note): keep it verbatim as a
+            # comment-only row so it round-trips.
+            rows.append({
+                "Species": "",
+                "Expression": "",
+                "Comment": body,
+                "_active": False,
+                "_atom": atom,
+            })
+    return rows, OBSERVATION_HEADERS
+
+
+def serialize_observations(rows: list[dict]) -> str:
+    lines = []
+    for r in rows:
+        species = r.get("Species", "")
+        if not species:
+            comment = r.get("Comment", "")
+            lines.append(f"#{comment}" if comment else "#")
+            continue
+        part = f"{species} <- {r.get('Expression', '')}"
+        if r.get("Comment"):
+            part += f"  # {r['Comment']}"
+        if not r.get("_active", True):
+            part = f"#{part}"
+        lines.append(part)
+    return "\n".join(lines) + "\n"
+
+
+# A trailing lowercase p/m marks a cation/anion in this notation (real
+# species/element symbols are upper-case), and a leading c./l./t. marks a
+# cyclic/linear/triplet isomer.
+_OBS_ION_SUFFIX = {"p": "+", "m": "-"}
+_OBS_ISOMER_PREFIX = {"c.": "c-", "l.": "l-", "t.": "t-"}
+
+
+def obs_name_to_species(name: str) -> tuple[str, tuple[str, ...]]:
+    """Map an observations.txt name to ``(label, ab_components)``.
+
+    ``label`` is the key the observation is stored under (so duplicate rows
+    for the same species/phase collapse, last active one winning).
+    ``ab_components`` is the tuple of Nautilus ``ab/<species>.ab`` names
+    whose predicted abundances are summed to compare against this
+    observation.
+
+    Rules, inferred from the TMC1 observation lists this format comes from:
+    the token before the first ``_`` is the species (``H2O_TMC1`` -> ``H2O``,
+    ``C9H8_TMC1_Gotham`` -> ``C9H8``); a leading ``c.``/``l.``/``t.`` becomes
+    ``c-``/``l-``/``t-``; a trailing ``p``/``m`` becomes ``+``/``-``
+    (``N2Hp`` -> ``N2H+``). An ``_Ice`` token anywhere after the species
+    marks a grain value: label ``<species>_ice`` and components
+    ``("J<species>", "K<species>")`` — the surface + mantle populations,
+    which Nautilus tracks separately.
+    """
+    tokens = name.split("_")
+    core = tokens[0]
+    is_ice = any(t.lower() == "ice" for t in tokens[1:])
+
+    prefix = ""
+    for tag, repl in _OBS_ISOMER_PREFIX.items():
+        if core.startswith(tag):
+            prefix, core = repl, core[len(tag):]
+            break
+
+    suffix = ""
+    if len(core) > 1 and core[-1] in _OBS_ION_SUFFIX:
+        suffix, core = _OBS_ION_SUFFIX[core[-1]], core[:-1]
+
+    species = f"{prefix}{core}{suffix}"
+    if is_ice:
+        return f"{species}_ice", (f"J{species}", f"K{species}")
+    return species, (species,)
+
+
+# Arithmetic-only expression evaluator for the Expression column (numbers,
+# +-*/**, parentheses, and references to earlier names in the same file) —
+# deliberately not a general `eval`, so a malformed line can't run code.
+_SAFE_BINOPS = {
+    ast.Add: lambda a, b: a + b,
+    ast.Sub: lambda a, b: a - b,
+    ast.Mult: lambda a, b: a * b,
+    ast.Div: lambda a, b: a / b,
+    ast.Pow: lambda a, b: a ** b,
+}
+
+
+def _safe_eval_node(node: ast.AST, env: dict[str, float]) -> float:
+    if isinstance(node, ast.Expression):
+        return _safe_eval_node(node.body, env)
+    if isinstance(node, ast.Constant) and isinstance(node.value, (int, float)):
+        return node.value
+    if isinstance(node, ast.Name):
+        if node.id not in env:
+            raise ValueError(f"unknown reference '{node.id}'")
+        return env[node.id]
+    if isinstance(node, ast.BinOp) and type(node.op) in _SAFE_BINOPS:
+        return _SAFE_BINOPS[type(node.op)](
+            _safe_eval_node(node.left, env), _safe_eval_node(node.right, env)
+        )
+    if isinstance(node, ast.UnaryOp) and isinstance(node.op, (ast.USub, ast.UAdd)):
+        value = _safe_eval_node(node.operand, env)
+        return -value if isinstance(node.op, ast.USub) else value
+    raise ValueError("unsupported expression")
+
+
+def evaluate_observations(
+    rows: list[dict],
+) -> tuple[dict[str, tuple[float, tuple[str, ...], str | None]], dict[str, str]]:
+    """Evaluate the *active* rows of a parsed observations.txt.
+
+    Returns ``(by_species, errors)``. ``by_species`` maps a label (from
+    :func:`obs_name_to_species`) to ``(observed_abundance, ab_components,
+    atom)``, where ``ab_components`` is the tuple of ``ab/<species>.ab``
+    names whose predicted abundances are summed to compare against it (one
+    entry for a gas species, ``J`` + ``K`` for an ice one) and ``atom`` is
+    the key atom (``"C"``/``"N"``/``"O"``/``"S"``) of the ``### <name>``
+    section the row sits in, or ``None``. Rows are evaluated top-to-bottom
+    with each name added to the environment as it's defined (so a later
+    expression can reference an earlier one, e.g.
+    ``SO_GEMs <- (SO_CPa+SO_CPb+SO_CPc)/3``), and — matching the R semantics
+    this file is written in — a later active row for the same label
+    overwrites an earlier one. ``errors`` maps a raw name to why its
+    expression couldn't be evaluated (bad syntax, or a reference to a name
+    never defined or only defined in a deactivated row).
+    """
+    env: dict[str, float] = {}
+    by_species: dict[str, tuple[float, tuple[str, ...], str | None]] = {}
+    errors: dict[str, str] = {}
+    for r in rows:
+        name = r.get("Species", "")
+        if not name or not r.get("_active", True):
+            continue
+        expr = r.get("Expression", "").replace("^", "**")
+        try:
+            value = _safe_eval_node(ast.parse(expr, mode="eval"), env)
+        except Exception as exc:
+            errors[name] = str(exc)
+            continue
+        env[name] = value
+        label, components = obs_name_to_species(name)
+        by_species[label] = (value, components, r.get("_atom"))
+    return by_species, errors
+
+
+# ---------------------------------------------------------------------------
+# control_plots.txt  (the 4x4 "Control plots" grid)
+#
+# One non-comment line per grid row (top to bottom); each line is split on
+# '|' into up to 4 cells (left to right); each cell lists the species to
+# overlay in that subplot, separated by whitespace and/or commas. '#' lines
+# and blank lines are ignored. Cell (row 0, col 0) is always the distance of
+# disagreement — whatever is written there is ignored.
+# ---------------------------------------------------------------------------
+CONTROL_GRID_SIZE = 4
+
+
+def parse_control_grid(text: str) -> list[list[list[str]]]:
+    """Parse control_plots.txt into a ``4x4`` grid of species-name lists.
+
+    Always returns a full ``CONTROL_GRID_SIZE x CONTROL_GRID_SIZE`` structure;
+    absent rows/cells come back as empty lists.
+    """
+    n = CONTROL_GRID_SIZE
+    grid = [[[] for _ in range(n)] for _ in range(n)]
+    r = 0
+    for line in text.splitlines():
+        s = line.strip()
+        if not s or s.startswith("#"):
+            continue
+        if r >= n:
+            break
+        for c, cell in enumerate(line.split("|")[:n]):
+            grid[r][c] = [tok for tok in re.split(r"[,\s]+", cell.strip()) if tok]
+        r += 1
+    return grid
+
+
+# ---------------------------------------------------------------------------
 # Dispatch
 # ---------------------------------------------------------------------------
 PARSERS = {
@@ -433,6 +662,7 @@ PARSERS = {
     "surface_parameters.in": parse_surface_params,
     "1D_static.dat": parse_1d_static,
     "structure_evolution.dat": parse_structure_evolution,
+    "observations.txt": parse_observations,
 }
 
 SERIALIZERS = {
@@ -447,4 +677,5 @@ SERIALIZERS = {
     "surface_parameters.in": serialize_surface_params,
     "1D_static.dat": serialize_1d_static,
     "structure_evolution.dat": serialize_structure_evolution,
+    "observations.txt": serialize_observations,
 }

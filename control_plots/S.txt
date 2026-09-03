@@ -1,0 +1,16 @@
+# Control plots — Sulfur (copied from TMC1_S.pdf)
+# NOTE: the displayed grid is the TRANSPOSE of this file — each line
+# below becomes a COLUMN of the plot (top cell = top of the column).
+#
+# NOTE: the reference PDF plots each curve as n(X)/n(H2); this tool plots
+# n(X)/n(H_total) (like the C/N/O grids), so the S panels sit ~2x lower than
+# the PDF. Shapes/trends are the same.
+#
+# 4 non-comment lines = grid rows; each split on '|' into 4 cells = columns.
+# Cell (row 0, col 0) is always the distance of disagreement (ignored here).
+#
+#  col 0                        | col 1              | col 2          | col 3
+   -                            | S CS HCS+          | HCS HSC        | C2S C4S HCCS+
+   C3S C5S HC3S+                 | H2CS CH3CHS        | H2CCS          | HCCS HC3S
+   HCCCHS H2C3S c-H2C3S C2H3CHS  | H2S               | NS NS+         | SO SO+
+   SO2                          | OCS NCS            | HNCS HSCN HCSCN HCOCN |

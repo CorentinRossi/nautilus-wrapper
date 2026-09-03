@@ -1,0 +1,12 @@
+# Control plots — Oxygen (copied from TMC1_O.pdf)
+# NOTE: the displayed grid is the TRANSPOSE of this file — each line
+# below becomes a COLUMN of the plot (top cell = top of the column).
+#
+# 4 non-comment lines = grid rows; each split on '|' into 4 cells = columns.
+# Cell (row 0, col 0) is always the distance of disagreement (ignored here).
+#
+#  col 0            | col 1                | col 2                  | col 3
+   -                | CO OH CO+ CO_ice     | CO2 HOCO+              | OH H2O
+   O2               | NO HNO NO+           | HCO                    | H2CO HCOH
+   C2O C3O HC3O+ C4O C5O | HCCO HC3O HC4O HC5O | HNCO HOCN HCNO      | H2CCO CH3CO+ HCCCHCO CH3CHCO
+   HCCCHO c-H2C3O H2C3O H2C4O | CH3OH CH3O CH2OH | HO2 H2O2          |

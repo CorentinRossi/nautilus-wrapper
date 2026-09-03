@@ -1,0 +1,12 @@
+# Control plots — key ions (copied from TMC1_ions.pdf)
+# NOTE: the displayed grid is the TRANSPOSE of this file — each line
+# below becomes a COLUMN of the plot (top cell = top of the column).
+#
+# 4 non-comment lines = grid rows; each split on '|' into 4 cells = columns.
+# Cell (row 0, col 0) is always the distance of disagreement (ignored here).
+#
+#  col 0                | col 1                  | col 2          | col 3
+   -                    | C+ e- GRAIN- S+ Fe+ H3+ | H+ He+ e-     | HCO+ H3O+ N2H+
+   HCNH+ HC3NH+ CN C+   | HOCO+                  | CH3CO+         | HC3O+
+   H2COH+               | HCS+ HCCS+             | NS+ NO+ SO+    | CH3+ CH5+ C2H3+ C2H4+ C2H5+
+   HSO+ HOS+ HOSO+      | C3H+ l-C3H2+ c-C3H2+   | C3H+ l-C3H3+ c-C3H3+ |
