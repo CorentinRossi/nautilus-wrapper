@@ -112,7 +112,7 @@ _DISAGREEMENT_KEY = "◆ Distance of disagreement"
 _DEX_FMT = FormatStrFormatter("%.1f")
 
 
-def _tidy_ticks(ax, xticks: int = 8, yticks: int = 8):
+def _tidy_ticks(ax, xticks: int = 8, yticks: int = 8, integer_y: bool = False):
     """No minor ticks anywhere; whole-decade major ticks on log axes, capped
     so labels on small panels don't overlap."""
     ax.minorticks_off()
@@ -121,7 +121,36 @@ def _tidy_ticks(ax, xticks: int = 8, yticks: int = 8):
     if ax.get_yscale() == "log":
         ax.yaxis.set_major_locator(LogLocator(base=10, numticks=yticks))
     else:
-        ax.yaxis.set_major_locator(MaxNLocator(nbins=yticks, prune="both"))
+        ax.yaxis.set_major_locator(MaxNLocator(
+            nbins=yticks, integer=integer_y,
+            prune=(None if integer_y else "both")))
+
+
+def _fit_y_to_x(ax, x0: float, x1: float):
+    """Scale the (linear) y-axis to the data visible within the x-range
+    ``[x0, x1]`` (curve points in range + any horizontal-bar levels)."""
+    ys: list[float] = []
+    for ln in ax.lines:
+        xd, yd = ln.get_xdata(), ln.get_ydata()
+        if len(xd) == 2 and xd[0] == xd[1]:                    # vertical line
+            continue
+        if len(xd) == 2 and len(yd) == 2 and yd[0] == yd[1]:   # axhline
+            ys.append(yd[0])
+            continue
+        for x, y in zip(xd, yd):
+            if x0 <= x <= x1 and y == y and y not in (math.inf, -math.inf):
+                ys.append(y)
+    if not ys:
+        return
+    lo, hi = min(ys), max(ys)
+    span = hi - lo
+    if span < 2:                          # keep a few integer ticks
+        mid = (lo + hi) / 2
+        lo, hi = mid - 1.5, mid + 1.5
+    else:
+        pad = 0.06 * span
+        lo, hi = lo - pad, hi + pad
+    ax.set_ylim(lo, hi)
 
 
 def fmt_num(x: float) -> str:
@@ -1008,7 +1037,7 @@ class PlotView(QWidget):
         self._canvas.draw_idle()
 
     def plot_series(self, series: dict[str, tuple[list[float], list[float]]],
-                    title: str = "", xlabel: str = "Time [years]",
+                    title: str = "", xlabel: str = "Time / yr",
                     ylabel: str = "Abundance", xlog: bool = True, ylog: bool = True,
                     xlim: tuple[float, float] | None = None,
                     observed: dict[str, float] | None = None,
@@ -1035,11 +1064,13 @@ class PlotView(QWidget):
                                  lw=0.9, alpha=0.7)
         self._ax.set_xscale("log" if xlog else "linear")
         self._ax.set_yscale("log" if ylog else "linear")
+        if xlim:
+            self._ax.set_xlim(*xlim)
+            if not ylog:
+                _fit_y_to_x(self._ax, *xlim)
         _tidy_ticks(self._ax)
         if not ylog:
             self._ax.yaxis.set_major_formatter(_DEX_FMT)
-        if xlim:
-            self._ax.set_xlim(*xlim)
         if vline is not None:
             self._ax.axvline(vline, color="black", lw=1)
         self._ax.set_xlabel(xlabel)
@@ -1052,50 +1083,59 @@ class PlotView(QWidget):
                 fontsize=("x-small" if n > 12 else "small" if n > 6 else "medium"),
                 ncol=(3 if n > 24 else 2 if n > 10 else 1),
             )
-        if title:
-            self._ax.set_title(title)
         self._canvas.draw_idle()
 
     def set_xlim(self, xlim: tuple[float, float] | None):
-        """Re-apply the x-range (a year range) to an already-drawn plot."""
+        """Re-apply the x-range (a year range) and re-fit y to it."""
         if not xlim:
             return
         touched = False
         for ax in self._axes:
             if ax.lines:
                 ax.set_xlim(*xlim)
+                if ax.get_yscale() != "log":
+                    _fit_y_to_x(ax, *xlim)
                 touched = True
         if touched:
             self._canvas.draw_idle()
 
     @staticmethod
-    def _draw_abundance_axes(ax, curves, colour, observed, vline, xlim,
+    def _draw_abundance_axes(ax, curves, observed, vline, xlim,
                              legend_fs="x-small"):
-        """Draw one axes worth of abundance curves + observed bars + vline."""
+        """Draw one axes: log10(abundance) on a linear y vs log time.
+
+        Colours are reset here — species are coloured from the tab palette
+        in first-appearance order within *this* axes, so the first curve of
+        every (sub)plot is tab blue.
+        """
+        order = list(dict.fromkeys(c[0] for c in curves))
+        colour = {sp: _SPECIES_PALETTE[i % len(_SPECIES_PALETTE)]
+                  for i, sp in enumerate(order)}
         for sp, _out, ls, xs, ys in curves:
-            ax.plot(xs, ys, color=colour.get(sp, "black"),
-                    linestyle=ls, lw=1.2)
-        cell_species = [s for s in colour if any(c[0] == s for c in curves)]
+            y = [math.log10(v) if v > _DISPLAY_FLOOR else math.nan for v in ys]
+            ax.plot(xs, y, color=colour[sp], linestyle=ls, lw=1.2)
         if observed:
-            for sp in cell_species:
+            for sp in order:
                 ov = observed.get(sp)
                 if ov and ov > 0:
-                    ax.axhline(ov, color=colour[sp], ls="--", lw=0.8, alpha=0.6)
+                    ax.axhline(math.log10(ov), color=colour[sp], ls="--",
+                               lw=0.8, alpha=0.6)
         ax.set_xscale("log")
-        ax.set_yscale("log")
-        _tidy_ticks(ax, xticks=5, yticks=6)
+        ax.set_yscale("linear")
         if xlim:
             ax.set_xlim(*xlim)
+            _fit_y_to_x(ax, *xlim)          # scale y to the data in this x range
+        _tidy_ticks(ax, xticks=5, yticks=6, integer_y=True)
         if vline is not None:
             ax.axvline(vline, color="black", lw=1)
         ax.grid(True, which="both", linestyle=":", alpha=0.5)
-        if cell_species:
+        if order:
             ax.legend(
-                [Line2D([], [], color=colour[s], lw=1.6) for s in cell_species],
-                cell_species, loc="best", fontsize=legend_fs,
-                ncol=(2 if len(cell_species) > 10 else 1),
+                [Line2D([], [], color=colour[s], lw=1.6) for s in order],
+                order, loc="best", fontsize=legend_fs,
+                ncol=(2 if len(order) > 10 else 1),
             )
-        return cell_species
+        return order
 
     def plot_abundances(self, curves, species_order, output_styles,
                         observed=None, vline=None,
@@ -1103,24 +1143,19 @@ class PlotView(QWidget):
         """Overlay abundance curves for several outputs on a single axes.
 
         ``curves``        : list of ``(species, output_name, linestyle, xs, ys)``
-        ``species_order`` : species names, in colour order
         ``output_styles`` : list of ``(output_name, linestyle)`` in display order
         ``observed``      : ``{species: observed abundance}`` -> dashed bar
         """
         self._use_single()
-        colour = {s: _SPECIES_PALETTE[i % len(_SPECIES_PALETTE)]
-                  for i, s in enumerate(species_order)}
-        self._draw_abundance_axes(self._ax, curves, colour, observed, vline, xlim)
-        self._ax.set_xlabel("Time [years]")
-        self._ax.set_ylabel("Abundance (rel. to H)")
+        self._draw_abundance_axes(self._ax, curves, observed, vline, xlim)
+        self._ax.set_xlabel("Time / yr")
+        self._ax.set_ylabel("log₁₀ abundance / n(H)")
         if len(output_styles) > 1:
             self._figure.legend(
                 [Line2D([], [], color="black", linestyle=ls) for _n, ls in output_styles],
                 [n for n, _ls in output_styles], loc="upper right",
                 fontsize="x-small", title="output",
             )
-        if title:
-            self._ax.set_title(title)
         self._canvas.draw_idle()
 
     @staticmethod
@@ -1133,10 +1168,11 @@ class PlotView(QWidget):
                 transform=ax.transAxes, ha="center", va="top", fontsize=7)
         ax.set_xscale("log")
         ax.set_yscale("linear")
-        _tidy_ticks(ax, xticks=5, yticks=6)
-        ax.yaxis.set_major_formatter(_DEX_FMT)
         if xlim:
             ax.set_xlim(*xlim)
+            _fit_y_to_x(ax, *xlim)
+        _tidy_ticks(ax, xticks=5, yticks=6)
+        ax.yaxis.set_major_formatter(_DEX_FMT)
         ax.grid(True, which="both", linestyle=":", alpha=0.5)
 
     def plot_abundances_grid(self, cell_curves, cell_dis, species_order,
@@ -1152,13 +1188,10 @@ class PlotView(QWidget):
         instead of species.
         """
         self._use_grid(rows, cols)
-        colour = {s: _SPECIES_PALETTE[i % len(_SPECIES_PALETTE)]
-                  for i, s in enumerate(species_order)}
         for i, ax in enumerate(self._axes):
             if i < len(cell_dis) and cell_dis[i] and disagreement:
                 self._draw_disagreement_axes(ax, *disagreement, xlim)
                 ax.tick_params(labelsize=7)
-                ax.set_title("distance of disagreement", fontsize=8)
                 continue
             cell = cell_curves[i] if i < len(cell_curves) else []
             if not cell:
@@ -1166,19 +1199,17 @@ class PlotView(QWidget):
                 ax.text(0.5, 0.5, "—", ha="center", va="center",
                         transform=ax.transAxes, color="lightgray", fontsize=14)
                 continue
-            self._draw_abundance_axes(ax, cell, colour, observed, vline, xlim,
+            self._draw_abundance_axes(ax, cell, observed, vline, xlim,
                                       legend_fs="xx-small")
             ax.tick_params(labelsize=7)
-        self._figure.supxlabel("Time [years]", fontsize=9)
-        self._figure.supylabel("Abundance (rel. to H)", fontsize=9)
+        self._figure.supxlabel("Time / yr", fontsize=9)
+        self._figure.supylabel("log₁₀ abundance / n(H)", fontsize=9)
         if len(output_styles) > 1:
             self._figure.legend(
                 [Line2D([], [], color="black", linestyle=ls) for _n, ls in output_styles],
                 [n for n, _ls in output_styles], loc="upper right",
                 fontsize="x-small", title="output",
             )
-        if title:
-            self._figure.suptitle(title, fontsize=10)
         self._canvas.draw_idle()
 
 
@@ -1220,46 +1251,15 @@ class ControlPlotsView(QWidget):
         )
         self._canvas.draw_idle()
 
-    @staticmethod
-    def _fit_y_to_x(ax, x0: float, x1: float):
-        """Set the panel's y-limits to the data visible in ``[x0, x1]``
-        (curve points in range + any horizontal-bar levels)."""
-        logy = ax.get_yscale() == "log"
-        ys: list[float] = []
-        for ln in ax.lines:
-            xd, yd = ln.get_xdata(), ln.get_ydata()
-            if len(xd) == 2 and xd[0] == xd[1]:          # a vertical line
-                continue
-            if len(xd) == 2 and len(yd) == 2 and yd[0] == yd[1]:   # an axhline
-                if not logy or yd[0] > 0:
-                    ys.append(yd[0])
-                continue
-            for x, y in zip(xd, yd):
-                if x0 <= x <= x1 and y == y and y not in (math.inf, -math.inf) \
-                        and (not logy or y > 0):
-                    ys.append(y)
-        if not ys:
-            return
-        lo, hi = min(ys), max(ys)
-        if logy:
-            lo, hi = lo / 2, hi * 3
-            # keep at least ~2 decades so whole-decade ticks stay visible
-            if hi / lo < 100:
-                mid = (lo * hi) ** 0.5
-                lo, hi = mid / 10, mid * 10
-            ax.set_ylim(lo, hi)
-        else:
-            pad = 0.06 * (hi - lo) or 0.5
-            ax.set_ylim(lo - pad, hi + pad)
-
     def plot_grid(self, cells: list[list[dict]], disagreement, run_name: str = "",
                   xlim: tuple[float, float] | None = None):
         """``cells`` is an ``n x n`` list of ``{label: (xs, ys, observed)}``
         dicts (cell [0][0] is ignored; ``observed`` is the observed abundance
         or ``None``); ``disagreement`` is ``(xs, ys)`` or ``None``.
 
-        Species panels plot abundance vs time on log axes (no x minor ticks,
-        no per-panel axis labels), sharing the x-range but each auto-scaling
+        Species panels plot log10(abundance) (linear y) vs log time (no
+        minor ticks, no per-panel axis labels), sharing the x-range but
+        each auto-scaling
         y to the data inside it. Cell (0, 0) is the linear-y distance of
         disagreement. Every panel gets a black vertical line at its minimum.
         """
@@ -1295,11 +1295,10 @@ class ControlPlotsView(QWidget):
                     else:
                         ax.text(0.5, 0.5, "no observations", ha="center", va="center",
                                 transform=ax.transAxes, color="gray", fontsize=8)
-                    ax.set_title("Distance of disagreement", fontsize=8)
                     if tmin is not None:
                         ax.axvline(tmin, color="black", lw=1)
                     if xr:
-                        self._fit_y_to_x(ax, *xr)
+                        _fit_y_to_x(ax, *xr)
                     _tidy_ticks(ax, xticks=4, yticks=4)
                     if not (disagreement and disagreement[0]):
                         ax.set_xticks([]); ax.set_yticks([])
@@ -1307,7 +1306,9 @@ class ControlPlotsView(QWidget):
                         ax.yaxis.set_major_formatter(_DEX_FMT)
                     continue
 
-                ax.set_yscale("log")
+                # species panels: log10(abundance) on a linear axis; ticks
+                # read -6, -8, -10 (= 1e-6, 1e-8, 1e-10)
+                ax.set_yscale("linear")
                 series = cells[r][c] if r < len(cells) and c < len(cells[r]) else {}
                 if not series:
                     ax.set_xticks([]); ax.set_yticks([])
@@ -1318,29 +1319,27 @@ class ControlPlotsView(QWidget):
                     continue
 
                 for label, (xs, ys, observed) in series.items():
-                    y = [v if v > _DISPLAY_FLOOR else math.nan for v in ys]
+                    y = [math.log10(v) if v > _DISPLAY_FLOOR else math.nan
+                         for v in ys]
                     line, = ax.plot(xs, y, lw=1, label=label)
                     if observed and observed > 0:
-                        ax.axhline(observed, color=line.get_color(),
+                        ax.axhline(math.log10(observed), color=line.get_color(),
                                    ls="--", lw=0.9, alpha=0.7)
                 if tmin is not None:
                     ax.axvline(tmin, color="black", lw=1)
                 ax.legend(fontsize=5, loc="best", ncol=1, handlelength=1.1,
                           borderpad=0.2, labelspacing=0.2, borderaxespad=0.2)
                 if xr:
-                    self._fit_y_to_x(ax, *xr)
-                _tidy_ticks(ax, xticks=4, yticks=4)
+                    _fit_y_to_x(ax, *xr)
+                _tidy_ticks(ax, xticks=4, yticks=4, integer_y=True)
 
         # x is shared -> only the bottom row shows its labels
         for r in range(n):
             for c in range(n):
                 self._axes[r][c].tick_params(labelbottom=(r == n - 1))
 
-        self._figure.supxlabel("Time [years]", fontsize=8)
-        self._figure.supylabel("Abundance (rel. to H)", fontsize=8)
-        self._figure.suptitle(
-            f"Control plots — {run_name}" if run_name else "Control plots", fontsize=10
-        )
+        self._figure.supxlabel("Time / yr", fontsize=8)
+        self._figure.supylabel("log₁₀ abundance / n(H)", fontsize=8)
         self._canvas.draw_idle()
 
     def set_xlim(self, xlim: tuple[float, float] | None):
@@ -1353,7 +1352,7 @@ class ControlPlotsView(QWidget):
             for ax in row:
                 if ax.lines or ax.texts:
                     ax.set_xlim(*xr)
-                    self._fit_y_to_x(ax, *xr)
+                    _fit_y_to_x(ax, *xr)
                     drawn = True
         if drawn:
             self._canvas.draw_idle()
@@ -2658,8 +2657,6 @@ class NautilusWrapper(QMainWindow):
         observed = (self._observed_map()
                     if self._observed_display in ("both", "plots") else None)
         out_styles = [(e["name"], e["linestyle"]) for e in outs]
-        title = ("Abundances - " + outs[0]["name"] if len(outs) == 1
-                 else f"Abundances - {len(outs)} outputs")
 
         lay = self._plot_layout
         use_grid = bool(lay and lay["cols"] * lay["rows"] > 1
@@ -2680,13 +2677,13 @@ class NautilusWrapper(QMainWindow):
                 cell_curves, cell_dis, species, out_styles,
                 lay["cols"], lay["rows"],
                 observed=observed, vline=self._disagreement_tmin(),
-                xlim=self._plot_xlim, title=title, disagreement=dis_data,
+                xlim=self._plot_xlim, disagreement=dis_data,
             )
         else:
             self._plot_view.plot_abundances(
                 curves, species, out_styles,
                 observed=observed, vline=self._disagreement_tmin(),
-                xlim=self._plot_xlim, title=title,
+                xlim=self._plot_xlim,
             )
         self._plot_view_redraw = self._run_plot_abundances
         self._dock_plot.show()
@@ -2894,7 +2891,7 @@ class NautilusWrapper(QMainWindow):
         self._plot_view.plot_series(
             series,
             title=f"Distance of Disagreement ({info['n_species']} species) - {self._run_dir.name}",
-            ylabel="distance of disagreement  [dex]",
+            ylabel="distance of disagreement / dex",
             xlog=True, ylog=False, xlim=self._plot_xlim,
             vline=tmin, black_labels={"D(t)"},
         )
