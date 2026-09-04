@@ -27,12 +27,14 @@ try:
         PARSERS, SERIALIZERS, ELEMENT_COLS, parse_species,
         parse_observations, evaluate_observations,
         parse_control_grid, obs_name_to_species, CONTROL_GRID_SIZE,
+        parse_plot_settings, serialize_plot_settings, DISAGREEMENT_TOKEN,
     )
 except ImportError:
     from parsers import (
         PARSERS, SERIALIZERS, ELEMENT_COLS, parse_species,
         parse_observations, evaluate_observations,
         parse_control_grid, obs_name_to_species, CONTROL_GRID_SIZE,
+        parse_plot_settings, serialize_plot_settings, DISAGREEMENT_TOKEN,
     )
 
 
@@ -74,6 +76,16 @@ OUTPUTS_DIR = Path(__file__).resolve().parent.parent / "outputs"
 # element, e.g. C.txt / N.txt / O.txt / S.txt / ions.txt), each drawn as its
 # own sub-tab. Kept out of the input sets so it's shared across runs.
 CONTROL_PLOTS_DIR = Path(__file__).resolve().parent.parent / "control_plots"
+
+# Persisted abundance-plot configuration (species, layout, style, output
+# distribution). Written every time "Plot" runs and read back at startup so
+# the selection survives restarts. Hand-editable; see parsers.py for the format.
+#
+# The file is *linked to a run*: it lives inside the folder of the "main"
+# output — the one at the top of the "Outputs to plot" list. The repo-root
+# path below is only a fallback/template used before any run is available.
+PLOT_SETTINGS_NAME = "plot_settings.txt"
+PLOT_SETTINGS_PATH = Path(__file__).resolve().parent.parent / PLOT_SETTINGS_NAME
 
 # Default x-axis range (time, years) for every plot; editable in Edit ▸
 # Settings ▸ Plotting.
@@ -1818,6 +1830,7 @@ class NautilusWrapper(QMainWindow):
         self._init_ui()
         self._load_first_set()
         self.file_list.setCurrentRow(0)
+        self._load_plot_settings()
 
     def _load_first_set(self):
         if self._input_sets:
@@ -1900,6 +1913,7 @@ class NautilusWrapper(QMainWindow):
         self._plot_xlim = vals["xlim"]
         obs_changed = vals["observed_display"] != self._observed_display
         self._observed_display = vals["observed_display"]
+        self._write_plot_settings()
         if self._run_dir is None:
             self._folder_label.setText(f"New runs → {self._export_parent}")
         # Push the new x-range onto everything already on screen.
@@ -2065,18 +2079,32 @@ class NautilusWrapper(QMainWindow):
             "Pick one or more previous run folders to overlay in the abundance plot"
         )
         self.btn_import_output.clicked.connect(self._import_output)
+        self.btn_output_up = QPushButton("▲")
+        self.btn_output_up.setFixedWidth(32)
+        self.btn_output_up.setToolTip(
+            "Move the selected output up. The top row is the main run — "
+            "plot_settings.txt is linked to it."
+        )
+        self.btn_output_up.clicked.connect(lambda: self._move_selected_output(-1))
+        self.btn_output_down = QPushButton("▼")
+        self.btn_output_down.setFixedWidth(32)
+        self.btn_output_down.setToolTip("Move the selected output down")
+        self.btn_output_down.clicked.connect(lambda: self._move_selected_output(1))
         self.btn_remove_output = QPushButton("Remove")
         self.btn_remove_output.setFixedWidth(80)
         self.btn_remove_output.setToolTip("Remove the selected output from the list")
         self.btn_remove_output.clicked.connect(self._remove_selected_output)
         imp_btn_row.addWidget(self.btn_import_output, 1)
+        imp_btn_row.addWidget(self.btn_output_up)
+        imp_btn_row.addWidget(self.btn_output_down)
         imp_btn_row.addWidget(self.btn_remove_output)
         import_lay.addLayout(imp_btn_row)
         self.output_list = QListWidget()
         self.output_list.setMaximumHeight(120)
         self.output_list.setToolTip(
             "Checked outputs are overlaid by “Plot”. Each species keeps its "
-            "colour; each output gets its own linestyle (session runs solid)."
+            "colour; each output gets its own linestyle (session runs solid).\n"
+            "The top row is the main run: plot_settings.txt is saved there."
         )
         self.output_list.itemChanged.connect(self._on_output_item_changed)
         import_lay.addWidget(self.output_list)
@@ -2331,18 +2359,44 @@ class NautilusWrapper(QMainWindow):
                 e["linestyle"] = _IMPORT_LINESTYLES[i % len(_IMPORT_LINESTYLES)]
                 i += 1
 
+    def _main_output(self) -> dict | None:
+        """The output at the top of the list — the "main" run that
+        plot_settings.txt is linked to (or ``None`` if the list is empty)."""
+        return self._outputs[0] if self._outputs else None
+
+    def _plot_settings_path(self) -> Path:
+        """Where plot_settings.txt lives: inside the main run's folder if there
+        is one, else the current working run, else the repo-root fallback."""
+        main = self._main_output()
+        if main is not None:
+            return Path(main["path"]) / PLOT_SETTINGS_NAME
+        if self._run_dir is not None:
+            return self._run_dir / PLOT_SETTINGS_NAME
+        return PLOT_SETTINGS_PATH
+
     def _refresh_output_list(self):
         self._assign_output_linestyles()
         self.output_list.blockSignals(True)
         self.output_list.clear()
-        for e in self._outputs:
-            label = e["name"] + ("  (session)" if e.get("session") else "")
+        for idx, e in enumerate(self._outputs):
+            tags = []
+            if idx == 0:
+                tags.append("main")
+            if e.get("session"):
+                tags.append("session")
+            label = e["name"] + (f"   [{', '.join(tags)}]" if tags else "")
             it = QListWidgetItem(label)
             it.setFlags(it.flags() | Qt.ItemFlag.ItemIsUserCheckable)
             it.setCheckState(Qt.CheckState.Checked if e["checked"]
                              else Qt.CheckState.Unchecked)
             it.setData(Qt.ItemDataRole.UserRole, str(e["path"]))
-            it.setToolTip(str(e["path"]))
+            tip = str(e["path"])
+            if idx == 0:
+                f = it.font()
+                f.setBold(True)
+                it.setFont(f)
+                tip += f"\nMain run — plot_settings.txt is linked here:\n{self._plot_settings_path()}"
+            it.setToolTip(tip)
             self.output_list.addItem(it)
         self.output_list.blockSignals(False)
 
@@ -2356,23 +2410,67 @@ class NautilusWrapper(QMainWindow):
         ) is NautilusWrapper._run_plot_abundances:
             self._run_plot_abundances()
 
+    def _move_selected_output(self, delta: int):
+        """Shift the selected output up (delta<0) or down (delta>0) in the
+        list. Moving a row to the top makes it the main run."""
+        sel = self.output_list.selectedItems()
+        if not sel:
+            return
+        path = sel[0].data(Qt.ItemDataRole.UserRole)
+        idx = next((i for i, e in enumerate(self._outputs)
+                    if str(e["path"]) == path), None)
+        if idx is None:
+            return
+        new = idx + delta
+        if not (0 <= new < len(self._outputs)):
+            return
+        prev_main = self._outputs[0]["path"]
+        self._outputs[idx], self._outputs[new] = (
+            self._outputs[new], self._outputs[idx])
+        self._refresh_output_list()
+        self.output_list.setCurrentRow(new)
+        if self._outputs[0]["path"] != prev_main:
+            self._on_main_output_changed()
+
+    def _on_main_output_changed(self):
+        """The top-of-list (main) run changed. Adopt that run's linked
+        plot_settings.txt if it has one, so the file stays tied to the run;
+        re-render the abundance plot if one is on screen."""
+        path = self._plot_settings_path()
+        if path.exists():
+            self._load_plot_settings()
+        self.statusBar().showMessage(
+            f"Main run: {self._outputs[0]['name']} · plot_settings.txt → {path}"
+        )
+        if getattr(self._plot_view_redraw, "__func__", None) \
+                is NautilusWrapper._run_plot_abundances:
+            self._run_plot_abundances()
+
     def _remove_selected_output(self):
         paths = {it.data(Qt.ItemDataRole.UserRole)
                  for it in self.output_list.selectedItems()}
         if not paths:
             return
+        prev_main = self._outputs[0]["path"] if self._outputs else None
         self._outputs = [e for e in self._outputs if str(e["path"]) not in paths]
         self._refresh_output_list()
+        new_main = self._outputs[0]["path"] if self._outputs else None
+        if new_main is not None and new_main != prev_main:
+            self._on_main_output_changed()
 
     def _register_session_output(self, path: Path):
         """Put a run generated this session on top of the list, checked, solid."""
+        prev_main = self._outputs[0]["path"] if self._outputs else None
         self._outputs = [e for e in self._outputs if e["path"] != path]
         self._outputs.insert(0, {"path": path, "name": path.name,
                                  "session": True, "checked": True})
         self._refresh_output_list()
+        if path != prev_main:
+            self._on_main_output_changed()
 
     def _import_output(self):
         """Add one or more previous run folders to the outputs list."""
+        had_outputs = bool(self._outputs)
         added, skipped = [], []
         for folder in self._pick_output_dirs():
             ab_dir = folder / "ab"
@@ -2396,7 +2494,10 @@ class NautilusWrapper(QMainWindow):
         self._set_run_dir(self._outputs[-1]["path"], note="(imported)")
         self._files_exported = False
         self.statusBar().showMessage(f"Imported: {', '.join(added)}")
-        if self._plot_selection:
+        if not had_outputs:
+            # First output(s) in the list: the top one is now the main run.
+            self._on_main_output_changed()
+        elif self._plot_selection:
             self._run_plot_abundances()
 
     def _sync_current_file(self):
@@ -2589,6 +2690,69 @@ class NautilusWrapper(QMainWindow):
                 rows.append(row)
         return rows
 
+    def _load_plot_settings(self):
+        """Restore species / layout / style from the main run's
+        plot_settings.txt if present.
+
+        A missing or malformed file is not an error — the app just keeps its
+        current (or built-in default) settings.
+        """
+        path = self._plot_settings_path()
+        try:
+            text = path.read_text(errors="replace")
+        except OSError:
+            return
+        try:
+            cfg = parse_plot_settings(text)
+        except Exception as exc:  # a bad file must never block startup
+            self._log(f"[Plot] ignoring {path}: {exc}")
+            return
+
+        if "species" in cfg:
+            self._plot_selection = set(cfg["species"])
+        lay = cfg.get("layout")
+        if lay:
+            cells = [
+                [_DISAGREEMENT_KEY if t == DISAGREEMENT_TOKEN else t
+                 for t in cell]
+                for cell in lay["cells"]
+            ]
+            self._plot_layout = {"cols": lay["cols"], "rows": lay["rows"],
+                                 "cells": cells}
+        style = cfg.get("style", {})
+        if "xlim" in style:
+            self._plot_xlim = style["xlim"]
+        if "observed" in style:
+            self._observed_display = style["observed"]
+        # `distribution` records the last plot's per-output line styles; the
+        # output list is rebuilt from disk each run, so there is nothing to
+        # restore from it here.
+
+    def _write_plot_settings(self):
+        """Persist the current abundance-plot configuration to the main run's
+        plot_settings.txt (plotted species, subplot layout, style and the
+        per-output line-style distribution). The main run is the output at the
+        top of the "Outputs to plot" list."""
+        lay = self._plot_layout or {}
+        cells = [
+            [DISAGREEMENT_TOKEN if t == _DISAGREEMENT_KEY else t for t in cell]
+            for cell in lay.get("cells", [])
+        ]
+        settings = {
+            "species": sorted(self._plot_selection),
+            "layout": {"cols": lay.get("cols", 1), "rows": lay.get("rows", 1),
+                       "cells": cells},
+            "style": {"xlim": self._plot_xlim,
+                      "observed": self._observed_display},
+            "distribution": [(e["name"], e.get("linestyle", "-"))
+                             for e in self._outputs if e["checked"]],
+        }
+        path = self._plot_settings_path()
+        try:
+            path.write_text(serialize_plot_settings(settings))
+        except OSError as exc:
+            self._log(f"[Plot] could not write {path}: {exc}")
+
     def _open_plot_settings(self):
         rows = self._collect_species_rows()
         if not rows:
@@ -2603,6 +2767,7 @@ class NautilusWrapper(QMainWindow):
         if dialog.exec():
             self._plot_selection = dialog.selected_species()
             self._plot_layout = dialog.layout_state()
+            self._write_plot_settings()
             lay = self._plot_layout
             n = lay["cols"] * lay["rows"]
             self.statusBar().showMessage(
@@ -2686,6 +2851,7 @@ class NautilusWrapper(QMainWindow):
                 xlim=self._plot_xlim,
             )
         self._plot_view_redraw = self._run_plot_abundances
+        self._write_plot_settings()
         self._dock_plot.show()
         self._dock_plot.raise_()
         if missing:

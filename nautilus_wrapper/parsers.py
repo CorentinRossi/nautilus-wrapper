@@ -648,6 +648,154 @@ def parse_control_grid(text: str) -> list[list[list[str]]]:
 
 
 # ---------------------------------------------------------------------------
+# plot_settings.txt  (persisted abundance-plot configuration)
+#
+# An INI-ish file with four sections, rewritten every time "Plot" runs and
+# safe to hand-edit while the app is closed. '#' comments and blank lines are
+# ignored; section names and keys are case-insensitive.
+#
+#   [species]       one whitespace/comma-separated list of species to overlay
+#   [layout]        cols / rows ints, plus "cell <n> = sp sp ..." per subplot
+#                   (n counts left-to-right, top-to-bottom; "*" marks the
+#                   distance-of-disagreement pseudo-series)
+#   [style]         xlim = "<min> <max>" (years), observed = both|control|plots
+#   [distribution]  "<output name> = <linestyle>" per checked output, in order
+# ---------------------------------------------------------------------------
+DISAGREEMENT_TOKEN = "*"
+_OBSERVED_MODES = ("both", "control", "plots")
+
+
+def parse_plot_settings(text: str) -> dict:
+    """Parse plot_settings.txt into a dict with (optional) keys ``species``
+    (list[str]), ``layout`` ({cols, rows, cells: list[list[str]]}), ``style``
+    ({xlim: (lo, hi), observed: str}) and ``distribution`` (list[(name, ls)]).
+
+    Missing sections/keys are simply absent from the result.
+    """
+    section: str | None = None
+    species: list[str] = []
+    lay: dict[str, Any] = {}
+    lay_cells: dict[int, list[str]] = {}
+    style: dict[str, Any] = {}
+    distribution: list[tuple[str, str]] = []
+
+    for raw in text.splitlines():
+        line = raw.split("#", 1)[0].strip()
+        if not line:
+            continue
+        if line.startswith("[") and line.endswith("]"):
+            section = line[1:-1].strip().lower()
+            continue
+        if section == "species":
+            species.extend(t for t in re.split(r"[,\s]+", line) if t)
+        elif section == "layout":
+            if "=" not in line:
+                continue
+            key, val = (p.strip() for p in line.split("=", 1))
+            kl = key.lower()
+            if kl in ("cols", "rows"):
+                try:
+                    lay[kl] = max(1, min(6, int(val)))
+                except ValueError:
+                    pass
+            elif kl.startswith("cell"):
+                try:
+                    idx = int(kl[4:].strip())
+                except ValueError:
+                    continue
+                lay_cells[idx] = [t for t in re.split(r"[,\s]+", val) if t]
+        elif section == "style":
+            if "=" not in line:
+                continue
+            key, val = (p.strip() for p in line.split("=", 1))
+            kl = key.lower()
+            if kl == "xlim":
+                nums = re.findall(r"[-+0-9.eE]+", val)
+                if len(nums) >= 2:
+                    try:
+                        style["xlim"] = (float(nums[0]), float(nums[1]))
+                    except ValueError:
+                        pass
+            elif kl == "observed" and val.lower() in _OBSERVED_MODES:
+                style["observed"] = val.lower()
+        elif section == "distribution":
+            if "=" not in line:
+                continue
+            name, ls = (p.strip() for p in line.split("=", 1))
+            if name:
+                distribution.append((name, ls))
+
+    out: dict[str, Any] = {}
+    if species:
+        out["species"] = species
+    if lay or lay_cells:
+        cols = lay.get("cols", 1)
+        rows = lay.get("rows", 1)
+        n = cols * rows
+        cells = [lay_cells.get(i + 1, []) for i in range(n)]
+        out["layout"] = {"cols": cols, "rows": rows, "cells": cells}
+    if style:
+        out["style"] = style
+    if distribution:
+        out["distribution"] = distribution
+    return out
+
+
+def serialize_plot_settings(settings: dict) -> str:
+    """Inverse of :func:`parse_plot_settings`. ``settings`` uses the same keys;
+    any that are missing get sensible defaults."""
+    species = list(settings.get("species") or [])
+    layout = settings.get("layout") or {}
+    style = settings.get("style") or {}
+    distribution = list(settings.get("distribution") or [])
+
+    cols = max(1, min(6, int(layout.get("cols", 1))))
+    rows = max(1, min(6, int(layout.get("rows", 1))))
+    cells = list(layout.get("cells") or [])
+
+    xlim = style.get("xlim", (1e3, 1e7))
+    observed = style.get("observed", "both")
+
+    def _fmt(x: float) -> str:
+        return f"{x:g}"
+
+    lines = [
+        "# plot_settings.txt - abundance-plot configuration for the Nautilus",
+        "# Wrapper. Rewritten every time \"Plot\" runs; safe to hand-edit while",
+        "# the app is closed. '#' comments and blank lines are ignored.",
+        "",
+        "[species]",
+        "# Species overlaid in the abundance plot (whitespace/comma separated).",
+        "  ".join(species) if species else "",
+        "",
+        "[layout]",
+        "# Subplot grid. One \"cell <n> = ...\" per subplot, numbered",
+        f"# left-to-right, top-to-bottom. Put {DISAGREEMENT_TOKEN} in a cell to draw the",
+        "# distance-of-disagreement curve there instead of species.",
+        f"cols = {cols}",
+        f"rows = {rows}",
+    ]
+    for i in range(cols * rows):
+        cell = cells[i] if i < len(cells) else []
+        lines.append(f"cell {i + 1} = " + "  ".join(cell))
+    lines += [
+        "",
+        "[style]",
+        "# xlim     abundance-plot time axis, \"<min> <max>\" in years",
+        "# observed where observed-abundance bars are drawn: both | control | plots",
+        f"xlim     = {_fmt(xlim[0])}  {_fmt(xlim[1])}",
+        f"observed = {observed}",
+        "",
+        "[distribution]",
+        "# Outputs checked in \"Outputs to plot\" and the line style each is drawn",
+        "# with, in draw order (session runs are solid). Regenerated on every plot.",
+    ]
+    for name, ls in distribution:
+        lines.append(f"{name} = {ls}")
+    return "\n".join(lines) + "\n"
+
+
+# ---------------------------------------------------------------------------
 # Dispatch
 # ---------------------------------------------------------------------------
 PARSERS = {
