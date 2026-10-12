@@ -16,8 +16,8 @@ from PyQt6.QtWidgets import (
     QTabWidget, QDialog, QDialogButtonBox, QFormLayout,
     QListView, QTreeView, QAbstractItemView, QSpinBox, QGridLayout,
 )
-from PyQt6.QtCore import Qt, QThread, pyqtSignal, QAbstractTableModel, QModelIndex, QSortFilterProxyModel
-from PyQt6.QtGui import QFont, QColor, QTextCharFormat, QSyntaxHighlighter, QAction, QIcon
+from PyQt6.QtCore import Qt, QThread, pyqtSignal, QAbstractTableModel, QModelIndex, QSortFilterProxyModel, QUrl
+from PyQt6.QtGui import QFont, QColor, QTextCharFormat, QSyntaxHighlighter, QAction, QIcon, QDesktopServices
 
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg, NavigationToolbar2QT
 from matplotlib.figure import Figure
@@ -799,6 +799,19 @@ class SortableHeaderView(QHeaderView):
 # ---------------------------------------------------------------------------
 # Background worker
 # ---------------------------------------------------------------------------
+class PresetCombo(QComboBox):
+    """Combo box that calls ``on_open`` just before showing its list, so
+    preset folders added or deleted on disk are picked up."""
+
+    def __init__(self, on_open, parent=None):
+        super().__init__(parent)
+        self._on_open = on_open
+
+    def showPopup(self):
+        self._on_open()
+        super().showPopup()
+
+
 class RunWorker(QThread):
     log_line = pyqtSignal(str)
     progress_update = pyqtSignal(int, str)
@@ -2053,6 +2066,7 @@ class NautilusWrapper(QMainWindow):
         self._observed_display: str = "both"
         self._plot_view_redraw = None  # last Plot-tab action, for live re-render
         self._files_exported = False
+        self._running = False  # a nautilus-astrochem command is in progress
         self._exported_dirs: set[Path] = set()  # folders this session has written to
         self._observations_warned: set[Path] = set()  # run dirs already warned about
         self._plot_selection: set[str] = set()
@@ -2073,6 +2087,7 @@ class NautilusWrapper(QMainWindow):
         self._load_first_set()
         self.file_list.setCurrentRow(0)
         self._load_plot_settings()
+        self._update_run_buttons()
 
     def _load_first_set(self):
         if self._input_sets:
@@ -2102,6 +2117,7 @@ class NautilusWrapper(QMainWindow):
         self._files_exported = False
         if self._run_dir is not None:
             self._folder_label.setText(str(self._run_dir) + " (modified)")
+        self._update_run_buttons()
         # The freshly-read contents supersede whatever the views hold; show
         # them without flushing the old set's data back over the new.
         self._refresh_current_view()
@@ -2118,10 +2134,98 @@ class NautilusWrapper(QMainWindow):
             if ok and chosen:
                 self._file_overrides[expected] = set_dir / chosen
 
+    def _save_as_preset(self):
+        """Write the current input files to ``inputs/<name>/`` and select the
+        new preset. Empty files are skipped, as in the shipped presets; an
+        existing preset is never overwritten."""
+        self._sync_current_file()
+        if not self._file_contents.get("parameters.in", "").strip():
+            QMessageBox.warning(
+                self, "Save as Preset",
+                "parameters.in is empty — a preset needs one to be listed.")
+            return
+        current = self._set_combo.currentText()
+        name = f"{current}-copy" if current else ""
+        while True:
+            name, ok = QInputDialog.getText(
+                self, "Save as Preset", "Name of the new input preset:",
+                text=name)
+            if not ok:
+                return
+            name = name.strip()
+            if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._+-]*", name):
+                QMessageBox.warning(
+                    self, "Save as Preset",
+                    "Use letters, digits and . _ + - only (no spaces or "
+                    "slashes), starting with a letter or digit.")
+                continue
+            if (ASSETS_DIR / name).exists():
+                QMessageBox.warning(
+                    self, "Save as Preset",
+                    f"A preset or folder named “{name}” already exists in "
+                    f"{ASSETS_DIR}.\nChoose another name.")
+                continue
+            break
+
+        dest = ASSETS_DIR / name
+        written = []
+        try:
+            dest.mkdir(parents=True)
+            for fname in ALL_INPUT_FILES:
+                content = self._file_contents.get(fname, "")
+                if content.strip():
+                    (dest / fname).write_text(content)
+                    written.append(fname)
+        except OSError as e:
+            QMessageBox.critical(self, "Save as Preset",
+                                 f"Could not write the preset:\n{e}")
+            return
+
+        # List the new preset and select it without reloading: the editor
+        # already holds exactly these contents.
+        self._current_set_dir = dest
+        self._file_overrides = {}
+        self._refresh_presets()
+        self.statusBar().showMessage(
+            f"Saved preset “{name}” ({len(written)} files) → {dest}")
+        self._log(f"[Preset] saved {name}: {', '.join(written)}")
+
+    def _open_presets_folder(self):
+        """Show the input-presets folder in Finder / the system file manager."""
+        ASSETS_DIR.mkdir(parents=True, exist_ok=True)
+        if not QDesktopServices.openUrl(QUrl.fromLocalFile(str(ASSETS_DIR))):
+            QMessageBox.warning(self, "Presets folder",
+                                f"Could not open:\n{ASSETS_DIR}")
+
+    def _refresh_presets(self):
+        """Rescan inputs/ and rebuild the preset list without loading
+        anything; keep the loaded preset selected (blank if it's gone)."""
+        self._input_sets = get_input_sets()
+        loaded = self._current_set_dir.name if self._current_set_dir else ""
+        self._set_combo.blockSignals(True)
+        self._set_combo.clear()
+        self._set_combo.addItems(list(self._input_sets))
+        self._set_combo.setCurrentIndex(
+            self._set_combo.findText(loaded) if loaded in self._input_sets else -1)
+        self._set_combo.blockSignals(False)
+
     def _on_set_changed(self, name: str):
-        if name and name in self._input_sets:
+        if not name or name not in self._input_sets:
+            return
+        set_dir = self._input_sets[name]
+        try:
+            if not (set_dir / "parameters.in").is_file():
+                raise FileNotFoundError(set_dir / "parameters.in")
             self._load_set(name)
-            self.file_list.setCurrentRow(0)
+        except OSError as e:
+            self._refresh_presets()
+            QMessageBox.warning(
+                self, "Preset unavailable",
+                f"The preset “{name}” could not be loaded — it was deleted, "
+                f"moved or is incomplete:\n{e}\n\nThe preset list has been "
+                "refreshed; the editor still holds the previous inputs.")
+            return
+        self.file_list.setCurrentRow(0)
 
     def _init_menu(self):
         self._settings_window: SettingsWindow | None = None
@@ -2209,11 +2313,25 @@ class NautilusWrapper(QMainWindow):
         left_lay = QVBoxLayout(left)
         left_lay.setContentsMargins(4, 4, 4, 4)
 
-        self._set_combo = QComboBox()
+        self._set_combo = PresetCombo(self._refresh_presets)
         for name in self._input_sets:
             self._set_combo.addItem(name)
         self._set_combo.currentTextChanged.connect(self._on_set_changed)
-        left_lay.addWidget(self._set_combo)
+        set_row = QHBoxLayout()
+        set_row.addWidget(self._set_combo, 1)
+        self.btn_save_preset = QPushButton("Save as preset…")
+        self.btn_save_preset.setToolTip(
+            f"Save the input files as they are now in the editor (edits "
+            f"included) as a new preset in {ASSETS_DIR.name}/<name>/")
+        self.btn_save_preset.clicked.connect(self._save_as_preset)
+        set_row.addWidget(self.btn_save_preset)
+        self.btn_open_presets = QPushButton("📁")
+        self.btn_open_presets.setFixedWidth(36)
+        self.btn_open_presets.setToolTip(
+            f"Open the presets folder ({ASSETS_DIR}) in the file manager")
+        self.btn_open_presets.clicked.connect(self._open_presets_folder)
+        set_row.addWidget(self.btn_open_presets)
+        left_lay.addLayout(set_row)
 
         self.file_list = QListWidget()
         for name in ALL_INPUT_FILES:
@@ -2550,6 +2668,7 @@ class NautilusWrapper(QMainWindow):
         self._run_dir = path
         self._folder_label.setText(str(path) + (f"  {note}" if note else ""))
         self._folder_label.setStyleSheet("")
+        self._update_run_buttons()
 
     def _prompt_run_folder(self) -> Path | None:
         """Ask for the run folder name at export time; returns the full path."""
@@ -2646,12 +2765,14 @@ class NautilusWrapper(QMainWindow):
             it.setToolTip(tip)
             self.output_list.addItem(it)
         self.output_list.blockSignals(False)
+        self._update_run_buttons()
 
     def _on_output_item_changed(self, item: QListWidgetItem):
         p = item.data(Qt.ItemDataRole.UserRole)
         for e in self._outputs:
             if str(e["path"]) == p:
                 e["checked"] = item.checkState() == Qt.CheckState.Checked
+        self._update_run_buttons()
         if self._plot_view_redraw is not None and getattr(
                 self._plot_view_redraw, "__func__", None
         ) is NautilusWrapper._run_plot_abundances:
@@ -2740,6 +2861,7 @@ class NautilusWrapper(QMainWindow):
         # Point the disagreement / control-plot / run target at the import too.
         self._set_run_dir(self._outputs[-1]["path"], note="(imported)")
         self._files_exported = False
+        self._update_run_buttons()
         self.statusBar().showMessage(f"Imported: {', '.join(added)}")
         if not had_outputs:
             # First output(s) in the list: the top one is now the main run.
@@ -2754,6 +2876,7 @@ class NautilusWrapper(QMainWindow):
         self._files_exported = False
         if self._run_dir is not None:
             self._folder_label.setText(str(self._run_dir) + " (modified)")
+        self._update_run_buttons()
 
     def _export_files(self):
         self._sync_current_file()
@@ -2811,6 +2934,7 @@ class NautilusWrapper(QMainWindow):
 
         self._files_exported = True
         self._folder_label.setText(str(self._run_dir))
+        self._update_run_buttons()
         self.statusBar().showMessage(f"Exported {len(self._file_contents)} files to {dest}")
         QMessageBox.information(
             self, "Export Complete",
@@ -2878,6 +3002,8 @@ class NautilusWrapper(QMainWindow):
             self._run_progress.setRange(0, 0)
             self._run_progress_label.setVisible(True)
             self._run_progress_label.setText("Generating outputs...")
+        self._running = True
+        self._update_run_buttons()
         self._run_worker = RunWorker(cmd, str(self._run_dir))
         self._run_worker.log_line.connect(self._log)
         if show_progress:
@@ -2892,6 +3018,7 @@ class NautilusWrapper(QMainWindow):
         self._run_progress_label.setText(text)
 
     def _on_run_finished(self, label: str, code: int):
+        self._running = False
         self._run_progress.setVisible(False)
         self._run_progress_label.setVisible(False)
         if code == 0:
@@ -2904,14 +3031,59 @@ class NautilusWrapper(QMainWindow):
                 self._register_session_output(self._run_dir)
             self.statusBar().showMessage(f"{label} completed successfully")
             self._log(f"[{label}] completed (exit 0)")
+            self._update_run_buttons()
         else:
             self.statusBar().showMessage(f"{label} failed (exit code {code})")
             self._log(f"[{label}] FAILED (exit {code})")
+            self._update_run_buttons()
             if code == -1:
                 detail = "Could not start the process (see the log for details)."
             else:
                 detail = f"Process exited with code {code}. See the log for details."
             QMessageBox.warning(self, label, f"{label} failed.\n\n{detail}")
+
+    def _update_run_buttons(self):
+        """Enable only the Run-group actions the current stage allows:
+        exported inputs → Run nautilus → output.nc → Write ab/ outputs →
+        ab/ → plots. Everything is locked while a command runs. A disabled
+        button's tooltip says what's missing."""
+        if not hasattr(self, "btn_plot_controls"):
+            return  # called while the UI is still being built
+        rd = self._run_dir
+        has_nc = rd is not None and (rd / "output.nc").exists()
+        ab = rd / "ab" if rd is not None else None
+        has_ab = ab is not None and ab.is_dir() and any(ab.glob("*.ab"))
+        busy = "a nautilus command is running"
+        if self._running:
+            run_why = busy
+        elif rd is None:
+            run_why = "export the inputs to a run folder first"
+        elif not self._files_exported:
+            run_why = "inputs were edited since the last export — export again"
+        else:
+            run_why = None
+        states = {
+            self.btn_run_code: run_why,
+            self.btn_run_outputs: busy if self._running else (
+                None if has_nc else "no output.nc yet — run nautilus first"),
+            self.btn_plot_settings: busy if self._running else None,
+            self.btn_run_plot: busy if self._running else (
+                None if any(e["checked"] for e in self._outputs)
+                else "no checked output — write the ab/ outputs or import a run"),
+        }
+        ab_why = busy if self._running else (
+            None if has_ab else "no ab/ output in the working folder yet — "
+                                "write the ab/ outputs or import a run")
+        states[self.btn_plot_disagreement] = ab_why
+        states[self.btn_plot_controls] = ab_why
+        for btn, why in states.items():
+            base = btn.property("base_tooltip")
+            if base is None:
+                base = btn.toolTip()
+                btn.setProperty("base_tooltip", base)
+            btn.setEnabled(why is None)
+            tip = base if why is None else f"{base}\n\nUnavailable: {why}."
+            btn.setToolTip(tip.strip())
 
     def _run_nautilus_code(self):
         nautilus_bin = self._find_nautilus_bin()
