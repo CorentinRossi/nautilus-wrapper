@@ -2,7 +2,9 @@
 
 import math
 import operator as _op
+import os
 import re
+import shutil
 import sys
 from pathlib import Path
 
@@ -113,6 +115,13 @@ DEFAULT_PLOT_XLIM = (1e3, 1e7)
 
 # Key atoms the distance of disagreement is broken down over.
 KEY_ATOMS = ("C", "N", "O", "S")
+# Nautilus is run through the PyPI CLI (``uv tool install
+# nautilus-astrochem@latest``): ``run`` writes output.nc in the run folder,
+# then ``write-ascii abundances`` turns it into the ab/<species>.ab files
+# the plots read.
+NAUTILUS_CLI = "nautilus-astrochem"
+RUN_LABEL = "nautilus run"
+WRITE_AB_LABEL = "write-ascii abundances"
 # Every Nautilus ab/ output value is multiplied by this on read: the raw
 # columns are per H2, so ×2 gives the abundance relative to H (total H
 # nuclei) — the quantity every plot and the disagreement metric use.
@@ -816,6 +825,13 @@ class RunWorker(QThread):
                 if self._cancelled:
                     proc.kill()
                     break
+                # tqdm bar from `write-ascii` (\r-separated, so one "line"
+                # per update): drive the progress bar, don't flood the log.
+                t = re.search(r"(\d+)%\|[^|]*\|\s*(\d+)/(\d+)", line)
+                if t:
+                    self.progress_update.emit(
+                        int(t.group(1)), f"{t.group(2)}/{t.group(3)} species")
+                    continue
                 self.log_line.emit(line.rstrip("\n"))
                 m = re.search(r"\[\s*([\d.]+)\s*%\].*remaining:\s*([\d.]+)\s*(\w+)", line)
                 if m:
@@ -2338,10 +2354,15 @@ class NautilusWrapper(QMainWindow):
 
         run_group = QGroupBox("Run")
         run_lay = QVBoxLayout(run_group)
-        self.btn_run_code = QPushButton("Run nautilus_code")
+        self.btn_run_code = QPushButton("Run nautilus")
+        self.btn_run_code.setToolTip(
+            f"{NAUTILUS_CLI} run — integrates the model, writes output.nc")
         self.btn_run_code.clicked.connect(self._run_nautilus_code)
         run_lay.addWidget(self.btn_run_code)
-        self.btn_run_outputs = QPushButton("Run nautilus_outputs")
+        self.btn_run_outputs = QPushButton("Write ab/ outputs")
+        self.btn_run_outputs.setToolTip(
+            f"{NAUTILUS_CLI} write-ascii abundances — converts output.nc "
+            "to ab/<species>.ab")
         self.btn_run_outputs.clicked.connect(self._run_nautilus_outputs)
         run_lay.addWidget(self.btn_run_outputs)
         plot_row = QHBoxLayout()
@@ -2759,7 +2780,8 @@ class NautilusWrapper(QMainWindow):
         dest = self._run_dir
         if dest.exists() and dest.resolve() not in self._exported_dirs:
             clashing = sorted(f for f in self._file_contents if (dest / f).exists())
-            has_output = (dest / "ab").is_dir() or any(dest.glob("*.out"))
+            has_output = ((dest / "ab").is_dir() or (dest / "output.nc").exists()
+                          or any(dest.glob("*.out")))
             if clashing or has_output:
                 details = []
                 if clashing:
@@ -2770,7 +2792,7 @@ class NautilusWrapper(QMainWindow):
                 if has_output:
                     details.append(
                         "The folder also holds results from a previous run "
-                        "(ab/, *.out) — those are left in place but will no longer "
+                        "(output.nc, ab/, *.out) — those are left in place but will no longer "
                         "match the new inputs."
                     )
                 resp = QMessageBox.warning(
@@ -2877,7 +2899,7 @@ class NautilusWrapper(QMainWindow):
             self._ab_cache.clear()
             self._disagreement_cache = None
             self._control_rendered.clear()
-            if label == "nautilus_outputs" and self._run_dir is not None \
+            if label == WRITE_AB_LABEL and self._run_dir is not None \
                     and (self._run_dir / "ab").is_dir():
                 self._register_session_output(self._run_dir)
             self.statusBar().showMessage(f"{label} completed successfully")
@@ -2892,14 +2914,21 @@ class NautilusWrapper(QMainWindow):
             QMessageBox.warning(self, label, f"{label} failed.\n\n{detail}")
 
     def _run_nautilus_code(self):
-        nautilus_bin = self._find_nautilus_bin("nautilus_code")
+        nautilus_bin = self._find_nautilus_bin()
         if nautilus_bin:
-            self._run_command([str(nautilus_bin)], "nautilus_code", show_progress=True)
+            self._run_command([str(nautilus_bin), "run"], RUN_LABEL,
+                              show_progress=True)
 
     def _run_nautilus_outputs(self):
-        nautilus_bin = self._find_nautilus_bin("nautilus_outputs")
+        if self._run_dir is not None and not (self._run_dir / "output.nc").exists():
+            QMessageBox.warning(
+                self, "No output.nc",
+                f"No output.nc in:\n{self._run_dir}\n\nRun nautilus first.")
+            return
+        nautilus_bin = self._find_nautilus_bin()
         if nautilus_bin:
-            self._run_command([str(nautilus_bin)], "nautilus_outputs", show_progress=False)
+            self._run_command([str(nautilus_bin), "write-ascii", "abundances"],
+                              WRITE_AB_LABEL, show_progress=True)
 
     def _collect_species_rows(self) -> list[dict]:
         """One row per gas/grain species: name, type, elemental composition."""
@@ -3012,7 +3041,7 @@ class NautilusWrapper(QMainWindow):
             QMessageBox.warning(
                 self, "No output",
                 "No outputs are checked in “Outputs to plot”.\n\n"
-                "Run nautilus_outputs or use Import… to add a run folder.",
+                "Run nautilus and write the ab/ outputs, or use Import… to add a run folder.",
             )
             return
         if not self._plot_selection:
@@ -3041,7 +3070,7 @@ class NautilusWrapper(QMainWindow):
                 self, "No abundance data",
                 f"None of the {len(species)} selected species have a .ab file "
                 f"in the {len(outs)} checked output(s).\n\n"
-                "Run nautilus_code and nautilus_outputs first.",
+                "Run nautilus and write the ab/ outputs first.",
             )
             return
 
@@ -3418,18 +3447,26 @@ class NautilusWrapper(QMainWindow):
             self._log(f"[Control plots] {stem}: no .ab output for: "
                       + ", ".join(missing))
 
-    def _find_nautilus_bin(self, name: str) -> Path | None:
-        pnautilus = Path(__file__).resolve().parent.parent.parent / "pnautilus"
-        candidates = [
-            pnautilus / "install" / "bin" / name,
-            pnautilus / "build" / "src" / name,
-        ]
-        for p in candidates:
-            if p.exists():
-                return p
+    def _find_nautilus_bin(self) -> Path | None:
+        """Locate the ``nautilus-astrochem`` CLI (installed with
+        ``uv tool install nautilus-astrochem@latest``). A GUI launched from
+        Finder/the Dock doesn't inherit the shell PATH, so uv's default tool
+        bin dirs are checked explicitly after PATH."""
+        found = shutil.which(NAUTILUS_CLI)
+        if found:
+            return Path(found)
+        bin_dirs = [os.environ.get("UV_TOOL_BIN_DIR"),
+                    os.environ.get("XDG_BIN_HOME"),
+                    str(Path.home() / ".local" / "bin")]
+        for d in bin_dirs:
+            if d and (Path(d) / NAUTILUS_CLI).exists():
+                return Path(d) / NAUTILUS_CLI
         QMessageBox.critical(
             self, "Error",
-            f"Could not find '{name}'.\nMake sure pnautilus is built and installed."
+            f"Could not find '{NAUTILUS_CLI}'.\n\n"
+            "Install it with:\n"
+            "  uv tool install nautilus-astrochem@latest\n\n"
+            f"then check that '{NAUTILUS_CLI} -h' works in a terminal."
         )
         return None
 
