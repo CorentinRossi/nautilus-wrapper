@@ -2,7 +2,7 @@
 name = "nautilus-wrapper"
 version = "0.1.0"
 description = "A GUI wrapper for the Nautilus astrochemistry code"
-requires-python = ">=3.11"
+requires-python = ">=3.10"
 dependencies = [
     "PyQt6>=6.5",
     "matplotlib>=3.7",
