@@ -15,7 +15,7 @@ from PyQt6.QtWidgets import (
     QListView, QTreeView, QAbstractItemView, QSpinBox, QGridLayout,
 )
 from PyQt6.QtCore import Qt, QThread, pyqtSignal, QAbstractTableModel, QModelIndex, QSortFilterProxyModel
-from PyQt6.QtGui import QFont, QColor, QTextCharFormat, QSyntaxHighlighter, QAction
+from PyQt6.QtGui import QFont, QColor, QTextCharFormat, QSyntaxHighlighter, QAction, QIcon
 
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg, NavigationToolbar2QT
 from matplotlib.figure import Figure
@@ -68,6 +68,26 @@ TOGGLE_ACTIVE_FILES = REACTION_FILES | {"observations.txt"}
 # state on load comes from the file's own '#' markers, not a blanket default.
 PRESERVE_INACTIVE_FILES = {"observations.txt"}
 CHUNK_SIZE = 4000
+
+
+_PKG_DIR = Path(__file__).resolve().parent
+# Per-OS application icon. macOS wants the full-bleed rounded-square PNG,
+# Windows/Linux the padded square; the SVG is the last-resort fallback.
+_ICON_FILES = {
+    "darwin": "icon_mac.png",
+    "win32": "icon_win.png",
+}
+
+
+def app_icon() -> QIcon:
+    """The window/taskbar icon for the current platform (falls back to the
+    generic Linux PNG, then the SVG)."""
+    for name in (_ICON_FILES.get(sys.platform, "icon_linux.png"),
+                 "icon_linux.png", "icon.svg"):
+        path = _PKG_DIR / name
+        if path.exists():
+            return QIcon(str(path))
+    return QIcon()
 
 
 ASSETS_DIR = Path(__file__).resolve().parent.parent / "inputs"
@@ -346,6 +366,63 @@ class TableModel(QAbstractTableModel):
         else:
             self._row_map = None
 
+    def _next_unique_id(self, id_col: int) -> int:
+        """Smallest positive integer not already used in data column
+        ``id_col`` — but prefer ``max + 1`` while it still fits the 6-digit
+        reaction ID field."""
+        used: set[int] = set()
+        for r in self._data:
+            if id_col < len(r):
+                try:
+                    used.add(int(float(r[id_col].strip())))
+                except (ValueError, TypeError):
+                    pass
+        if used:
+            nxt = max(used) + 1
+            if nxt <= 999999:
+                return nxt
+        n = 1
+        while n in used:
+            n += 1
+        return n
+
+    def add_blank_row(self) -> int:
+        """Append an empty, active row and return its data-row index. If the
+        model has an ``ID`` column the new row is given an ID that is unique
+        among the existing rows, so it survives export cleanly."""
+        hdrs = self.data_headers()
+        values = ["" for _ in hdrs]
+        id_col = next((i for i, h in enumerate(hdrs)
+                       if h.strip().lower() == "id"), None)
+        if id_col is not None:
+            values[id_col] = str(self._next_unique_id(id_col))
+        start = len(self._data)
+        view_row = self.rowCount()
+        self.beginInsertRows(QModelIndex(), view_row, view_row)
+        self._data.append(values)
+        self._active.append(True)
+        self._visible.append(True)
+        if self._row_map is not None:
+            self._row_map.append(start)   # keep it visible under an active filter
+        self.endInsertRows()
+        self._detect_numeric_cols()
+        return start
+
+    def delete_rows(self, data_rows) -> int:
+        """Remove the given data-row indices. Returns how many were deleted."""
+        drop = {i for i in data_rows if 0 <= i < len(self._data)}
+        if not drop:
+            return 0
+        self.beginResetModel()
+        keep = [i for i in range(len(self._data)) if i not in drop]
+        self._data = [self._data[i] for i in keep]
+        self._active = [self._active[i] for i in keep]
+        self._visible = [self._visible[i] for i in keep]
+        self._refresh_row_map()
+        self._detect_numeric_cols()
+        self.endResetModel()
+        return len(drop)
+
     def set_data(self, rows: list[dict], headers: list[str], active_col: bool = False,
                  active_default: bool = True):
         self.beginResetModel()
@@ -561,8 +638,15 @@ class TableModel(QAbstractTableModel):
         else:
             hdrs = self.data_headers()
             col_map = {h: i for i, h in enumerate(hdrs)}
+            checked_idx = None
+            if self._active_col is not None:
+                checked_idx = len(hdrs)
+                for alias in self._CHECKED_ALIASES:
+                    col_map.setdefault(alias, checked_idx)
             self._visible = []
-            for row in self._data:
+            for i, row in enumerate(self._data):
+                if checked_idx is not None:
+                    row = row + ["1" if self._active[i] else "0"]
                 try:
                     self._visible.append(self._eval_filter(self._filter_expr, col_map, row))
                 except Exception:
@@ -575,11 +659,16 @@ class TableModel(QAbstractTableModel):
     _OR_RE = re.compile(r"\s*(?:\|\|?|\bor\b)\s*", re.IGNORECASE)
     _XOR_RE = re.compile(r"\s*(?:\^|⊕|\bxor\b)\s*", re.IGNORECASE)
     _AND_RE = re.compile(r"\s*(?:&&?|∧|\band\b)\s*", re.IGNORECASE)
-    _CMP_RE = re.compile(r"\s*(==|!=|<=|>=|<|>)\s*")
+    # Equality is a single "=" ("==" still accepted). "!=", "<=", ">=" must be
+    # matched before the bare "<", ">", "=" alternatives.
+    _CMP_RE = re.compile(r"\s*(!=|<=|>=|==?|<|>)\s*")
     _OPS = {
-        "==": _op.eq, "!=": _op.ne,
+        "=": _op.eq, "==": _op.eq, "!=": _op.ne,
         "<": _op.lt, "<=": _op.le, ">": _op.gt, ">=": _op.ge,
     }
+    # Virtual column names that resolve to a row's checkbox state ("1"/"0")
+    # when the model has an active column.
+    _CHECKED_ALIASES = ("Checked", "checked", "Active", "active")
 
     def filter_error(self, expr: str) -> str | None:
         """Return a message describing why ``expr`` is not a usable filter, or
@@ -591,6 +680,8 @@ class TableModel(QAbstractTableModel):
         if not columns:
             return None
         valid_cols = set(columns)
+        if self._active_col is not None:
+            valid_cols.update(self._CHECKED_ALIASES)
         leaves: list[str] = []
         for or_part in self._OR_RE.split(expr):
             for xor_part in self._XOR_RE.split(or_part):
@@ -601,7 +692,9 @@ class TableModel(QAbstractTableModel):
                 return "incomplete expression (dangling and/or/xor)"
             parts = self._CMP_RE.split(leaf, 1)
             if len(parts) != 3:
-                return f"'{leaf}' is not a comparison (need ==, !=, <, <=, >, >=)"
+                # No comparison operator: a bare word is a free-text search
+                # across every column, which is always valid.
+                continue
             col, _cmp, val = parts[0].strip(), parts[1].strip(), parts[2].strip()
             if not col:
                 return f"missing column before '{_cmp}'"
@@ -642,7 +735,12 @@ class TableModel(QAbstractTableModel):
         ops = self._OPS
         parts = self._CMP_RE.split(expr, 1)
         if len(parts) != 3:
-            return True
+            # No operator: substring search over every cell in the row
+            # (case-insensitive). "X" -> rows where any field contains X.
+            term = expr.strip().strip('"').strip("'").lower()
+            if not term:
+                return True
+            return any(term in cell.lower() for cell in row)
         col_name, cmp, val = parts[0].strip(), parts[1].strip(), parts[2].strip()
         if col_name not in col_map:
             return True
@@ -789,35 +887,60 @@ class StructuredView(QWidget):
 
         self.progress_bar = progress_bar
 
+        # Filter bar — shown for every structured file. The activate/deactivate
+        # controls below it only apply to files with a checkbox column.
+        self._filter_bar = QWidget()
+        filter_row = QHBoxLayout(self._filter_bar)
+        filter_row.setContentsMargins(0, 0, 0, 0)
+        self._filter_input = QLineEdit()
+        self._filter_input.setPlaceholderText(
+            "Filter, e.g.  Checked=1 & A<1e-10   ·   bare word = search every "
+            "column   ·   and/or/xor  & | ^"
+        )
+        self._filter_input.returnPressed.connect(self._apply_filter)
+        filter_row.addWidget(self._filter_input, 1)
+        self._filter_info = QLabel()
+        self._filter_info.setStyleSheet("color: #666;")
+        filter_row.addWidget(self._filter_info)
+        self._btn_clear_filter = QPushButton("Clear")
+        self._btn_clear_filter.setFixedWidth(50)
+        self._btn_clear_filter.clicked.connect(self._clear_filter)
+        filter_row.addWidget(self._btn_clear_filter)
+        layout.addWidget(self._filter_bar)
+        self._filter_bar.setVisible(False)
+
+        # Actions bar — shown for every structured file. Add/Delete line always;
+        # the activate-all controls and the count only where rows have a checkbox.
         self._toggle_bar = QWidget()
         toggle_lay = QVBoxLayout(self._toggle_bar)
         toggle_lay.setContentsMargins(0, 0, 0, 0)
         toggle_lay.setSpacing(4)
 
-        filter_row = QHBoxLayout()
-        filter_row.setContentsMargins(0, 0, 0, 0)
-        self._filter_input = QLineEdit()
-        self._filter_input.setPlaceholderText(
-            "Filter, e.g.  Reactant1 == H & A < 1e-10   (and/or/xor · & | ^)"
-        )
-        self._filter_input.returnPressed.connect(self._apply_filter)
-        filter_row.addWidget(self._filter_input, 1)
-        self._btn_clear_filter = QPushButton("Clear")
-        self._btn_clear_filter.setFixedWidth(50)
-        self._btn_clear_filter.clicked.connect(self._clear_filter)
-        filter_row.addWidget(self._btn_clear_filter)
-        toggle_lay.addLayout(filter_row)
-
         btn_row = QHBoxLayout()
         btn_row.setContentsMargins(0, 0, 0, 0)
+        self._btn_add_line = QPushButton("Add line")
+        self._btn_add_line.setFixedWidth(76)
+        self._btn_add_line.setToolTip(
+            "Append a new row to the list (kept on export; gets a unique ID "
+            "where the file has an ID column)"
+        )
+        self._btn_add_line.clicked.connect(self._add_line)
+        self._btn_delete_line = QPushButton("Delete line")
+        self._btn_delete_line.setFixedWidth(86)
+        self._btn_delete_line.setToolTip(
+            "Delete the selected row(s) from the list (asks for confirmation)"
+        )
+        self._btn_delete_line.clicked.connect(self._delete_line)
         self._btn_deactivate_all = QPushButton("Deactivate All")
-        self._btn_deactivate_all.setFixedWidth(140)
+        self._btn_deactivate_all.setFixedWidth(120)
         self._btn_deactivate_all.clicked.connect(lambda: self.model.toggle_all(False))
         self._btn_activate_all = QPushButton("Activate All")
-        self._btn_activate_all.setFixedWidth(120)
+        self._btn_activate_all.setFixedWidth(108)
         self._btn_activate_all.clicked.connect(lambda: self.model.toggle_all(True))
         self._toggle_info = QLabel()
         self._toggle_info.setStyleSheet("color: #666;")
+        btn_row.addWidget(self._btn_add_line)
+        btn_row.addWidget(self._btn_delete_line)
         btn_row.addWidget(self._btn_deactivate_all)
         btn_row.addWidget(self._btn_activate_all)
         btn_row.addWidget(self._toggle_info, 1)
@@ -856,11 +979,25 @@ class StructuredView(QWidget):
         self._parser = PARSERS.get(filename)
         self._serializer = SERIALIZERS.get(filename)
         if not self._parser:
+            self._filter_bar.setVisible(False)
+            self._toggle_bar.setVisible(False)
             return
 
         self._filename = filename
         self._active_col = filename in TOGGLE_ACTIVE_FILES
-        self._toggle_bar.setVisible(self._active_col)
+        # Filter + Add/Delete line apply to any structured file; the
+        # activate-all controls and the count only make sense with a checkbox.
+        self._filter_bar.setVisible(True)
+        self._toggle_bar.setVisible(True)
+        self._btn_deactivate_all.setVisible(self._active_col)
+        self._btn_activate_all.setVisible(self._active_col)
+        self._toggle_info.setVisible(self._active_col)
+        # Don't carry a filter typed for one file over to the next.
+        self._filter_input.blockSignals(True)
+        self._filter_input.clear()
+        self._filter_input.blockSignals(False)
+        mark_filter_validity(self._filter_input, None)
+        self.model.set_filter("")
 
         heavy = filename in HEAVY_FILES
 
@@ -919,11 +1056,18 @@ class StructuredView(QWidget):
         self.model.sort_by_column(col, ascending)
 
     def _update_info(self):
+        total = len(self.model._data)
+        visible = len(self.model._visible_rows())
+        noun = "reactions" if self._filename in REACTION_FILES else "rows"
+        # Row-count feedback for every structured file (shown only while a
+        # filter is actually hiding something).
+        if self._filter_input.text().strip() and visible != total:
+            self._filter_info.setText(f"{visible}/{total} {noun}")
+        else:
+            self._filter_info.setText("")
         if not self._active_col or not self.model._active:
             return
-        noun = "reactions" if self._filename in REACTION_FILES else "rows"
         total = len(self.model._active)
-        visible = len(self.model._visible_rows())
         active = sum(1 for i in self.model._visible_rows() if self.model._active[i])
         if visible == total:
             self._toggle_info.setText(f"{active}/{total} {noun} active")
@@ -943,6 +1087,86 @@ class StructuredView(QWidget):
         self._filter_input.clear()
         mark_filter_validity(self._filter_input, None)
         self.model.set_filter("")
+        self._update_info()
+
+    def _add_line(self):
+        """Append a blank row to the current list, flush it so it is exported,
+        and start editing its first cell."""
+        if not self._parser or (self._worker and self._worker.isRunning()):
+            return
+        self.model.add_blank_row()
+        # Flush the new row into the parent's file cache + mark unexported.
+        self.data_changed.emit()
+        self._update_info()
+        # Reveal and focus the new row (it is the last visible one).
+        view_row = self.model.rowCount() - 1
+        first_col = 1 if self._active_col else 0
+        idx = self.model.index(view_row, first_col)
+        if idx.isValid():
+            self.table.setCurrentIndex(idx)
+            self.table.scrollTo(idx)
+            self.table.edit(idx)
+
+    def _delete_line(self):
+        """Delete the selected row(s) after a warning + confirmation."""
+        if not self._parser or (self._worker and self._worker.isRunning()):
+            return
+        sel = self.table.selectionModel()
+        data_rows = sorted(
+            {self.model._map_row(ix.row()) for ix in sel.selectedIndexes()}
+        ) if sel else []
+        if not data_rows:
+            QMessageBox.information(
+                self, "Delete line",
+                "Select the row (or rows) you want to delete first.",
+            )
+            return
+
+        hdrs = self.model.data_headers()
+        id_col = next((i for i, h in enumerate(hdrs)
+                       if h.strip().lower() == "id"), None)
+        # Columns to show as "line content": every visible (non-internal) one.
+        show_cols = [i for i, h in enumerate(hdrs) if not h.startswith("_")]
+
+        def _describe(r: int) -> str:
+            row = self.model._data[r]
+            label = (row[0].strip() if row and row[0].strip() else f"row {r + 1}")
+            if id_col is not None and id_col < len(row) and row[id_col].strip():
+                label += f" (ID {row[id_col].strip()})"
+            content = "  ".join(
+                f"{hdrs[i]}={row[i].strip()}"
+                for i in show_cols
+                if i < len(row) and row[i].strip()
+            )
+            if len(content) > 160:
+                content = content[:159] + "…"
+            return f"• {label}\n    {content}" if content else f"• {label}"
+
+        shown = data_rows[:5]
+        preview = "\n".join(_describe(r) for r in shown)
+        if len(data_rows) > len(shown):
+            preview += f"\n• … and {len(data_rows) - len(shown)} more"
+        box = QMessageBox(self)
+        box.setIcon(QMessageBox.Icon.Warning)
+        box.setWindowTitle("Delete line")
+        box.setText(
+            f"Delete {len(data_rows)} selected "
+            f"{'row' if len(data_rows) == 1 else 'rows'} from {self._filename}?"
+        )
+        box.setInformativeText(
+            f"{preview}\n\nThis cannot be undone. The rows are removed from the "
+            "list now and dropped from the file on the next export."
+        )
+        box.setStandardButtons(
+            QMessageBox.StandardButton.Cancel | QMessageBox.StandardButton.Yes
+        )
+        box.setDefaultButton(QMessageBox.StandardButton.Cancel)
+        box.button(QMessageBox.StandardButton.Yes).setText("Delete")
+        if box.exec() != QMessageBox.StandardButton.Yes:
+            return
+
+        self.model.delete_rows(data_rows)
+        self.data_changed.emit()
         self._update_info()
 
     def _hide_internal_columns(self):
@@ -1687,7 +1911,8 @@ class SpeciesSelectorDialog(QDialog):
         filter_row = QHBoxLayout()
         self._filter = QLineEdit()
         self._filter.setPlaceholderText(
-            "Filter, e.g.  Type == grain | O > 0   (and/or/xor · & | ^)"
+            "Filter, e.g.  Checked=1 & O>0   ·   Type=grain   ·   bare word = "
+            "search every column   ·   and/or/xor  & | ^"
         )
         self._filter.returnPressed.connect(self._apply_filter)
         filter_row.addWidget(self._filter, 1)
@@ -1792,6 +2017,7 @@ class NautilusWrapper(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("Nautilus Wrapper")
+        self.setWindowIcon(app_icon())
         self.setMinimumSize(1200, 700)
         self._file_contents: dict[str, str] = {}
         self._mode = "comprehensive"
@@ -3211,6 +3437,7 @@ class NautilusWrapper(QMainWindow):
 def main():
     app = QApplication(sys.argv)
     app.setStyle("Fusion")
+    app.setWindowIcon(app_icon())
     window = NautilusWrapper()
     window.show()
     sys.exit(app.exec())
